@@ -1,0 +1,102 @@
+/* pretty forms */
+/* IE hack from http://www.mattheerema.com/archive/getting-fieldset-backgrounds-and-legends-to-behave-in-ie */
+fieldset {
+    margin: 5px auto auto 5px;
+    padding: .5em;
+    padding-top: 10px;
+    background-color: #F0F0F0  ;
+    border:1px solid #666;
+    width: 75%;
+}
+
+legend {
+    font-size: x-large;
+}
+
+fieldset div.help {
+    float: right;
+    clear: left;
+}
+
+/* Begin IE only */
+* html fieldset {
+    position: relative;
+    padding-top:.5em;
+    margin-top:1em;
+}
+
+* html fieldset {
+    margin-top:1em;
+    padding-top:1em;
+}
+
+* html legend {
+    position: absolute;
+    top:-.5em;
+    left:.5em;
+}
+/* End IE only */
+
+label {
+    float: left;
+    width: 150px;
+    font-style: italic;
+}
+
+input, textarea, select {
+    width: 180px;
+    margin-bottom: 5px;
+}
+
+.thin {
+    width: 80px;
+}
+
+input.checkbox {
+    width: inherit;
+}
+
+textarea {
+    width: 250px;
+    height: 150px;
+}
+
+.boxes {
+    width: 1em;
+}
+
+.submitbutton {
+    margin-left: 120px;
+    margin-top: 5px;
+    width: 90px;
+}
+
+fieldset br {
+    clear: left;
+}
+
+fieldset.config td.value {
+    width: 80px;
+}
+
+fieldset.config td.meta {
+    text-align: center;
+    font-size: x-small;
+    font-style: italic;
+}
+
+fieldset.config input {
+    width: inherit;
+    padding: 0px;
+    margin: 0px;
+}
+
+fieldset.config input.checkbox {
+    width: auto;
+}
+
+fieldset .form_hint,
+fieldset .hint {
+    font-size: x-small;
+}
+

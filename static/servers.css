@@ -1,0 +1,18 @@
+table#servers {
+    border: 1px solid #A0A0A0;
+    font-size: small;
+    width: 100%;
+}
+
+table#servers td {
+    padding: 3px;
+    margin: 0px;
+}
+
+table#servers tr.even {
+    background-color: #F0F0F0;
+}
+
+table#servers tr.odd {
+    background-color: #D8D8D8;
+}
