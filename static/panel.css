@@ -15,5 +15,6 @@ div#panel div#tabs {
 }
 
 div#panel div.tab {
+    padding-top: 10px;
     padding-left: 10px;
 }

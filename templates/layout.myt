@@ -1,8 +1,8 @@
 <html>
     <head>
         <title>MyOTTD</title>
-% for style in ("style", "fieldset", "servers", "panel") :
-        <link rel="Stylesheet" type="text/css" href="static/${style}.css" />
+% for style in ("style", "fieldset", "servers", "panel", "console", "files") :
+        <link rel="Stylesheet" type="text/css" href="/static/${style}.css" />
 % endfor        
     </head>
     <body>

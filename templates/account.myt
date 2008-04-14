@@ -1,26 +1,5 @@
 <%inherit file="layout.myt" />
-
-<%def name="tab_header(tabs)">
-<%
-    global _panel_tabs, _panel_selected_tabs
-
-    _panel_tabs = (tab for tab, desc in tabs)
-    _panel_selected_tabs = list(set(_panel_tabs) & set(request.args.iterkeys()))
-%>
-                    <ul>
-% for tab, tab_desc in tabs :
-                        <li><a href="?${tab}">${tab_desc}</a></li>
-% endfor
-                    </ul>
-</%def>
-
-<%def name="tab_div_attrs(tab_name, default=False)">
-<% _panel_selected_tabs = globals()['_panel_selected_tabs'] %>
-id="t_${tab_name}" class="tab"\
-% if not (tab_name in _panel_selected_tabs or (not _panel_selected_tabs and default)) :
- style="display: none;"\
-% endif
-</%def>
+<%namespace file="_panel.myt" import="*" />
 
                 <h1>User Control Panel</h1>
 
@@ -35,9 +14,7 @@ ${tab_header((
 ))}
                     </div>
 
-                    <div ${tab_div_attrs("account", default=True)}>
-                        <h1>Account data</h1>
-                        
+                    <div ${tab_div_attrs("account", default=True)}>  
                         <form action="?account" method="POST">
                             <fieldset>
                                 <legend>Password</legend>
@@ -60,15 +37,16 @@ ${tab_header((
                                 <input type="submit" name="submit" value="Change Password" />
                             </p>
                         </form>
+                        
+                        <h1>Account data</h1>
+
+                        <h2>Change Password</h2>
+                        <p>
+                            To change your password, you need to enter in your current password as well.
+                        </p>
                     </div>
 
                     <div ${tab_div_attrs("email")}>
-                        <h1>Email Settings</h1>
-                        <p>
-                            If you change your email address, you will be required to confirm the new address before you can
-                            log in again.
-                        </p>
-
                         <form action="?email" method="POST">
                             <fieldset>
                                 <legend>Change Email Address</legend>
@@ -90,16 +68,21 @@ ${tab_header((
                                 <input type="submit" name="submit" value="Change Email Address" />
                             </p>
                         </form>
+                        
+                        <h1>Email Settings</h1>
+                        <p>
+                            If you change your email address, you will be required to confirm the new address before you can
+                            log in again.
+                        </p>
+                        <p>
+                            You must also verify your current password to be able to change your email address.
+                        </p>
                     </div>
 
                     <div ${tab_div_attrs("servers")}>
-                        <h1>Your Servers</h1>
-                        <p>
-                            You can only have a limited number of servers. Currently this limit is unknown (XXX: ???).
-                        </p>
-
                         <table id="servers" cellspacing="1">
                             <tr>
+                                <th>&nbsp;</th>
                                 <th>ID #</th>
                                 <th>Name</th>
                                 <th>Title</th>
@@ -110,19 +93,20 @@ ${tab_header((
                             </tr>
 
                             <tr class="odd">
+                                <td><img src="/static/icons/server-status-on.png" alt="server-status-on" title="Active" /></td>
                                 <td>138</td>
-                                <td>main</td>
-                                <td><a href="http://user1.myottd.net/main">Main</a>
-                                </td>
+                                <td><a href="/account/servers/main">main</a>
+                                <td>Main</td>
                                 <td> 0 / 10 </td>
                                 <td> 1 / 8 </td>
                                 <td> Stable (0.6.0) </td>
                                 <td />
                             </tr>
                             <tr class="even">
+                                <td><img src="/static/icons/server-status-off.png" alt="server-status-off" title="Inactive" /></td>
                                 <td>205</td>
-                                <td>test</td>
-                                <td><a href="http://user1.myottd.net/test">Test</a></td>
+                                <td><a href="/account/servers/test">test</a></td>
+                                <td>Test</td>
                                 <td> 0 / 10 </td>
                                 <td> 1 / 8 </td>
                                 <td> Nightly (r12684) </td>
@@ -131,15 +115,32 @@ ${tab_header((
                                 </td>
                             </tr>
                             <tr class="odd">
+                                <td><img src="/static/icons/server-status-error.png" alt="server-status-error" title="Error!" /></td>
                                 <td>18</td>
-                                <td>desert</td>
-                                <td><a href="http://user2.myottd.net/desert">Desert Server</a></td>
+                                <td><a href="/account/servers/desert">desert</a></td>
+                                <td>Desert Server</td>
                                 <td> 0 / 10 </td>
                                 <td> 0 / 8 </td>
                                 <td> Stable (0.6.0) </td>
                                 <td />
                             </tr>
                         </table>
+                        
+                        <h1>Your Servers</h1>
+                        <p>
+                            You can only have a limited number of servers. Currently this limit is unknown (XXX: ???).
+                        </p>
+
+                        <h2>Status</h2>
+                        <p>
+                            The status is shown in terms of weather icons (because I couldn't find any better ones...). Sunny is good, Moon
+                            is server-offline, thunderstorm is warning, severe-weather-alert is error.
+                        </p>
+
+                        <h2>Manage / Configure</h2>
+                        <p>
+                            Click on the server name to access the server's control panel.
+                        </p>
                     </div>
 
                     <div ${tab_div_attrs("new_server")}>
