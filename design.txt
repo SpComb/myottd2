@@ -1,0 +1,94 @@
+So what daemons do we run?
+
+Core:
+ * db (PostgreSQL)
+    Stores all the historical, non-volatile data. DB Schema is latter on somewhere down there -->
+
+ * web
+    Handles the HTTP requests for dynamic web pages by pulling in data from the database/other daemons
+
+ * files
+    Handles the HTTP requests for static in-vserver files, and provides file metadata to web
+
+ * vservers
+    Handles the VServers, i.e. sets them up and runs/stops them
+
+ * servers
+    Handles the OpenTTD VServers (stdin, out, err, start, stop, command-line arguments)
+
+Extra:
+ * irc
+    Handles the IRC connections. Gets events/status from the servers daemon, and sends commands there. Probably receives some instructions from web as well
+
+
+Database schema:
+
+ * users
+    id
+    username
+    password (md5, salted as "%s_%s:%s" % (password, id, username))
+    email
+    created
+    last_login
+ 
+ * versions (OpenTTD versions)
+    tag (rel_060, rel_053, r12686, rel_060rc4)
+    name (0.6.0, r12686)
+    date (when it was released)
+    type (stable, oldstable, nightly, updated whenever these change, perhaps these should be stored elsewhere than in a column?)
+ 
+ * resources (server resource limitation classes)
+    id
+    name
+    hdd (in MB)
+    cpu (in ... percentage? Probably more complicated than that)
+    ram (in KB, hard limit, but perhaps swap?)
+ 
+ * ports (what TCP/UDP ports to use for servers)
+    port
+
+ * servers
+    id
+    owner ( -> users.id)
+    name
+    title
+    port ( -> ports.port)
+    version ( -> versions.tag)
+    status (run, stop, crash)
+    res_class ( -> resources.id)
+
+What runs on the VServers :
+    daemond - manage a remote daemon (OpenTTD dedicated server, in this case)
+
+    Objectives:
+        start, stop, restart 
+            execution state + command line arguments
+
+        stdin, stdout, stderr
+            buffered so that if the management side goes down, the daemon continues execution and stdout/stderr is buffered
+            and flushed out when the management side reappears.
+
+        status
+            Notify management when the process dies
+
+
+    Two FIFOs, in and out.
+    Read/write <cmd_byte><len_byte><cmd_data> segments.
+
+        0x10    - data_stdout       bytes
+        0x11    - data_stderr       bytes
+
+        0x20    - status_ok
+        0x21    - status_exit       error code
+        0x22    - status_fatality   signal
+        0x2F    - status_idle
+
+        0x60    - data_stdin        bytes
+
+        0x70    - do_start          <arg_count>[<arg_len><arg_data>]*arg_count
+        0x71    - do_kill           signal
+
+        0x80    - query_status      
+
+
+    exit status/fatality is remembered and returned in reply to query status

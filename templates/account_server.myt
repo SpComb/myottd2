@@ -6,6 +6,7 @@
                 <div id="panel">
                     <div id="tabs">
 ${tab_header((
+    ("status", "Status"),
     ("control", "Control"),
     ("console", "Console"),
     ("config",  "Config"),
@@ -15,7 +16,11 @@ ${tab_header((
 ))}
                     </div>
 
-                    <div ${tab_div_attrs("control", default=True)}>  
+                    <div ${tab_div_attrs("status", default=True)}>
+                        <p>(insert fancy-schmancy server status info)</p>
+                    </div>
+
+                    <div ${tab_div_attrs("control")}>  
                         <form action="?control" method="POST">
                             <fieldset>
                                 <legend>Server Running</legend>
