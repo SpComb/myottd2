@@ -1,0 +1,281 @@
+ --- mvsrvd (MyOTTD VServer Daemon) ---
+    
+    This is the daemon that is responsible for creating new VServers, starting them, stopping them and possibly destroying them.
+
+    Most of these operation require root priviledges. The entire daemon itself is not run as root, but instead, it calls upon
+    external minimal-functionality scripts that are setuid root.
+
+Server naming :
+    The server name should be "${username}_${server_id}". Username is restricted to a-z, 0-9, -
+
+Server numbering :
+    Two numbers, class and seqid. These are used to build the port, IP and xid numbers.
+
+    seqid goes from 0 to 99, and class goes from 0 to 9.
+
+    server_port         = 7000 + class*100 + seqid
+    server_ip           = 10.22.{class/2}.{(class%2)*100 + seqid}
+    server_xid          = 10000 + class*100 + seqid
+
+    Classes :
+        0       - dev
+        1       - test
+        2       - prod
+        3..9    - unused
+
+
+mvsrvd <mode>
+
+
+
+Variables :
+    mode                = dev | test | prod
+
+    ottd_dir            = /home/myottd/$mode/openttd/
+    servers_dir         = /home/myottd/$mode/servers/
+    shared_gfx_dir      = /home/myottd/$mode/shared_gfx/
+    
+    server_dir          = $servers_root/$server_name
+
+    lvm_vg              = myottd_$mode
+    lvm_data_lv         = srv_${server_name}_data
+    lvm_data_dev        = /dev/$lvm_vg/$lvm_data_lv
+
+    data_mountpoint     = $server_dir/fs_data
+    guest_mountpoint    = $server_dir/guest
+
+    vserver_config      = $server_dir/config
+    vserver_root        = $server_dir/guest/root
+    vserver_lockfile    = $server_dir/lockfile
+    vserver_mark        = myottd_$mode
+    vserver_init_log    = $server_dir/init.log
+
+    vserver_if_dev      = (dev -> dummy0, test -> dummy1, prod -> dummy2) # logical if names?
+    vserver_if_ip       = ...
+    vserver_if_prefix   = 24
+
+    xid                 = ...
+
+
+Create Server :
+
+    create-server <srv_name> <srv_class> <srv_seqid> <srv_hdd_size_spec>
+    create-server testuser_1 1 1 20M
+
+ * create lvm lv for server data
+    lvcreate --size $server_hdd_size_spec --name $lvm_data_lv_name $lvm_vg
+ * build ext3 filesystem
+    mkfs.ext3 $lvm_data_dev
+ * mount the filesystem
+    mount $lvm_data_dev $data_mountpoint
+
+ * add the NAT-rule to iptables
+    # this is wrong
+    iptables -t nat -A PREROUTING -s ! $vserver_if_ip/$vserver_if_prefix -d $vserver_if_ip/$vserver_if_prefix -p --dport $server_port -j DNAT --to-destination $server_ip:$server_port
+
+ * build the vserver config. We do this manually, building the config dir structure directly
+      
+    $vserver_config :
+        badness         ?
+        
+        # http://linux-vserver.org/util-vserver:Capabilities_and_Flags
+        
+        # http://svn.linux-vserver.org/svn/util-vserver/trunk/lib/bcaps-v13.c
+        bcapabilities   ? Contains the system capabilities
+        capabilities    . 2.4 kernel only
+        ccapabilities   ? Contains the context capabilities
+
+        # http://svn.linux-vserver.org/svn/util-vserver/trunk/lib/ncaps-net.c
+        ncapabilities   ? Contains the network capabilities
+
+        # http://svn.linux-vserver.org/svn/util-vserver/trunk/lib/nflags-net.c
+        nflags          ? Contains a network flag per line
+
+        # http://svn.linux-vserver.org/svn/util-vserver/trunk/lib/cflags-v13.c
+        flags           ? Contains per line a flag
+        
+        # Contains the context id which shall be used for the vserver. Valid range is 2 through 49151.
+        # autogenerate these using some unknown mechanism
+        context         = $xid
+        ncontext        ? Contains the network context id which shall be used for the vserver. Valid range is 2 through 49151
+        
+        # wtf is this used for?
+        cache           ? "Path of the storage area for cached information about this vserver"
+        
+        # probably stays as default?
+        nice            ? The nice-level on which the vserver will be started.
+        
+        # Path of the vserver root directory
+        vdir            -> $vserver_root
+
+        # Points to a file which will contain the XID of the running vserver. When the vserver is stopped, this can be a dangling symlink
+        run             -> $vserver_lockfile
+        
+        # http://linux-vserver.org/util-vserver:Fstab
+        fstab           ? The fstab file for the vserver
+        fstab.remote    ? Entries in this file will be mounted within the network context of the guest; this means that mount will be called as chbind <options> mount ...
+
+        name            = $server_name
+
+        namespace       . not needed unless the global "nonamespace" flag is set
+        namespace-cleanup           . as above
+        namespace-cleanup-skip      ? probably same as above
+        nonamespace     . "Disables namespace usage for the current vserver"
+
+        # /usr/include/linux/personality.h
+        personality     ? "Used to set the personality of the vserver. First line in the file is the personality-type followed by flags (one item per line)"
+        
+        schedule        . [deprecated]
+
+        shell           . we don't have a shell installed
+        
+        tag             ? "Contains the filesystem tag which shall be used for the vserver. Valid range is 2 through 49151"
+
+        
+        apps :
+            init :
+                cmd.prepare     . The command which is used to setup the init-system
+                cmd.start-sync  . The command which is used to wait on the vserver after it has been started
+                cmd.stop-sync   . The command which is used to wait on the vserver after it has been stopped
+                
+                # The command which is used to start the vserver. Each option must be on a separate line.
+                cmd.start       = /sbin/init
+
+                # The command which is used to stop the vserver. Each option must be on a separate line.
+                cmd.stop        = /sbin/halt
+                
+                depends         . Not needed
+
+                environment     ? "The environment to set when starting the guest. Contains one VAR=VAL pair per line."
+
+                killseq         ? "Contains the 'signal [wait signal]*' sequence which is used to stop the vserver."
+                
+                # This file is used to mark group of vservers which shall be started/stopped together by the initscript. Content is a simple string like 'default'.
+                mark            = $vserver_mark
+
+                mtab            ? "The initial-mtab which will be used for the vserver"
+
+                runlevel        . The start runlevel.
+                runlevel.start  . The start runlevel.
+                runlevel.stop   . The stop runlevel.
+                
+                # Contains the init-style.
+                style           = "plain"
+
+                sync            . "If this file is not present, all 'cmd.*-sync files will be ignored."
+                
+                # A symlink to the TTY device where input/output will be redirected from/to at startup via initscript.
+                tty             -> $vserver_init_log
+
+            vdevmap :
+                # not needed, we don't need to create new devices inside the vservers
+
+            vshelper :
+                # need to investigate further into how this works
+            
+            vshelper-methods :
+                # see above
+
+            vunify :
+                # we do this manually
+
+            cpuset :
+                # need more research into what a cpuset is
+
+            dlimits :
+                # we shouldn't need any disk limits with the lvm solution (although it remains to be seen how well that handles resizes)
+                # http://linux-vserver.org/Disk_Limits_and_Quota
+
+            interfaces :
+                # broadcast should probably be disabled...
+                bcast           ? "The guest's broadcast address."
+
+                dev             = $vserver_if_dev
+                
+                # default == 127.0.0.1?
+                lback           ? "The guest's loopback address"
+
+
+                novlandev       ? "When this file exists, the steps which setup and destroy a VLAN interface will be skipped"
+                vlandev         ? "When this file exists, the steps which setup and destroy a VLAN interface will be executed for all interfaces of this vserver"
+
+                mask            ? "The default network mask"
+                prefix          . "The default network prefix-length"
+                scope           . "The default scope of the network interfaces"
+
+                0 :
+                    # The network device. When this is specified, the IP address will be assigned and removed when starting and stopping the guest
+                    dev             = $vserver_if_dev
+                    ip              = $vserver_if_ip
+                    prefix          = $vserver_if_prefix
+
+                    name            ? "When this file exists, the interface will be named with the text in this file. Without such an entry, the IP will not be shown by ifconfig but by ip addr ls only. Such a labeled interface is known as an "alias" also (e.g. 'eth0:foo')"
+                    scope           ? "The scope of the network interface"
+
+
+                    disabled        . "When this file exists, this interface will be ignored"
+                    gid             . "Sets the group ownership of tun/tap interfaces. Requires a group id, not a group name"
+                    linktype        . "Sets the link type of tun/tap interfaces"
+                    mask            . "The network mask."
+                    nocsum          . " If a tun or tap interface is created, the presence of this file will disable checksumming on it"
+                    nodev           . "When this file exists, the interface will be assumed to exist already. This can be used to assign primary interfaces which are created by the host or another vserver"
+                    shared          . "When this file exists, the tun/tap interface created will not be owned by this particular guest"
+                    tap             . "When this file exists, a tap interface will be created when the guest starts, and removed when the guest stops"
+                    tun             . "When this file exists, a tun interface will be created when the guest starts, and removed when the guest stops"
+                    uid             . "Sets the ownership of tun/tap interfaces. Requires a user id, not a username"
+
+                    novlandev       . "When this file exists, the steps which setup and destroy a VLAN interface will be skipped"
+                    vlandev         . "When this file exists, the steps which setup and destroy a VLAN interface will be executed"
+
+
+            rlimits :
+                # XXX: figure out the resource limitations (mem, cpu)
+                # http://linux-vserver.org/Resource_Limits
+                # http://linux-vserver.org/Memory_Limits
+
+                sched :
+                    # http://linux-vserver.org/CPU_Scheduler
+            
+            scripts :
+                # Not sure if we need to use these, we can handle them ourselves
+
+            spaces :
+                # WTF are these?
+
+            sysctl :
+                # probably don't need these
+
+            ulimits :
+                # how do these compare to rlimits?
+
+            uts :
+                # are these of any relevance?
+
+Start Server Action :
+    start-server <srv_name> <ottd_version>
+    
+    fs_base_dir         = $ottd_dir/fs_base
+    ottd_ver_dir        = $ottd_dir/fs_${ottd_version}
+
+    data_mountpoint     = $server_dir/fs_data
+
+ * mount unionfs containing :
+    ro  $fs_base_dir
+    ro  $ottd_ver_dir
+    ro  $shared_gfx_dir
+    rw  $data_mountpoint
+
+ * create fifos/socket/somesuch for communication between the in-vserver daemon and the central daemon
+    ???
+
+ * start the vserver
+    vserver $srv_name start
+
+Stop Server Action :
+    stop-server <srv_name>
+
+ * stop the server
+    vserver $srv_name stop
+
+    # how well does this work? What if the init process is misbehaving?
+

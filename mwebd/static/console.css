@@ -1,0 +1,24 @@
+form#console_input input#input {
+    width: 50%;
+}
+
+form#console_input input#submit {
+    width: 10%;
+}
+
+pre#console_out span.stdin {
+    color: green;
+}
+
+pre#console_out span.stdout {
+    color: blue;
+}
+
+pre#console_out span.stderr {
+    color: red;
+}
+
+pre#console_out span.status {
+    color: black;
+}
+

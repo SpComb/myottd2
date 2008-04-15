@@ -1,0 +1,5 @@
+ --- mwebd (MyOTTD Web Daemon) ---
+
+    I provide all the dynamic web pages over HTTP (http://www.myottd.net/).
+
+    Additionally, the static dir under this dir is served out on http://static.myottd.net/

@@ -1,0 +1,4 @@
+ --- mottdd (MyOTTD OpenTTD Daemon) ---
+
+    I am the daemon that manages the console output/running state of the OpenTTD processes running inside the VServers.
+

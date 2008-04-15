@@ -1,0 +1,7 @@
+ --- mfiled (MyOTTD Fileserver Daemon) ---
+
+    This is the daemon that mediates access to the filesystems of the VServers.
+
+    mwebd uses this to get file metadata, but I also provide download/upload access for raw files
+    via HTTP (http://files.myottd.net)
+
