@@ -1,8 +1,16 @@
 #!/bin/sh
 
-#
-# this script configures and initializes the environment for the given server, and then starts it
-# start-server.sh <name> <port> <ottd_version>
-#  e.g.
-# start-server.sh myottd_testuser_1 7148 060
+SCRIPT_PATH=/home/terom/myottd-dev/mvsrvd/scripts
+. $SCRIPT_PATH/_variables.sh
+. $SCRIPT_PATH/_functions.sh
+
+using_dir "$srv_path"
+    mount_union         guest_data/root/mnt         \
+        guest_data/data_rw=rw                       \
+        $MYOTTD_SHARED_GFX_DIR=ro                   \
+        $MYOTTD_OPENTTD_DIR/fs_${srv_version}=ro    \
+        $MYOTTD_FS_BASE_PATH=ro
+    
+    vserver_start       "$srv_name"
+leave_dir
 
