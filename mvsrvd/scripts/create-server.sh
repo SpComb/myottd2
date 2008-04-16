@@ -32,6 +32,9 @@ using_dir "$srv_path"
             #               name                        mode
             create_dir      mnt                         0755
 
+            #               name
+            set_barrier     ..
+
 
             using_dir dev
                 #               name        major   minor   mode
@@ -50,10 +53,10 @@ using_dir "$srv_path"
     leave_dir
 
     using_dir config
-        #               target              name
-        create_sym      ../guest_data/root  vdir
-        create_sym      ../lockfile         run
-        create_sym      ../cache            cache
+        #               target                          name
+        create_sym      "${srv_path}/guest_data/root"   vdir
+        create_sym      "${srv_path}/lockfile"          run
+        create_sym      "${srv_path}/cache"             cache
 
         #               name                content
         create_file     context             "$context_id"

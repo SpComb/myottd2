@@ -71,7 +71,13 @@ function create_file {
     /bin/echo "$data" > "$name" || error "echo($name, $data)"
 }
 
+function set_barrier {
+    dir="$1"
 
+    echo "Set --barrier attribute on '$dir'"
+
+    /usr/sbin/setattr --barrier "$dir" || error "setattr_barrier($dir)"
+}
 
 function create_lv {
     vg_name="$1"
@@ -87,10 +93,39 @@ function create_lv {
     /bin/mount /dev/${vg_name}/${lv_name} $mnt_point || error "mount($vg_name, $lv_name, $mnt_point)"
 }
 
+function remove_lv {
+    vg_name="$1"
+    lv_name="$2"
+
+    echo "Remove an LV called /dev/${vg_name}/${lv_name}"
+    
+    /sbin/lvremove -- "${vg_name}/${lv_name}" || error "lvremove($vg_name, $lv_name)"
+}
+
+function remove_dir {
+    path="$1"
+
+    echo "Remove dir at '$path'..."
+
+    /bin/rm --verbose --recursive --interactive=once -- "$path" || error "rm_recursive($path)"
+}
+
+function remove_sym {
+    path="$1"
+
+    if [ ! -h "$path" ]; then
+        error "$path is not a symlink!"
+    fi
+
+    echo "Remove symlink at '$path'..."
+    /bin/rm --verbose -- "$path" || error "rm($path)"
+}
 
 function mount_union {
     mount_point="$1"
     dirs=""
+
+    clear_mount "$mount_point" "fuse"
     
     shift; 
 
@@ -115,5 +150,49 @@ function vserver_start {
     echo "Starting vserver '$srv_name'..."
 
     /usr/sbin/vserver "$srv_name" start || error "vserver_start($srv_name)"
+}
+
+function vserver_stop {
+    srv_name="$1"
+
+    echo "Stopping vserver '$srv_name'..."
+
+    /usr/sbin/vserver "$srv_name" stop || error "vserver_stop($srv_name)"
+}
+
+function is_mounted {
+    suffix="$1"
+    type="$2"
+
+    echo -n "Checking if '...$suffix' ($type) is mounted... "
+
+    if [ "`/bin/mount | /bin/grep "$suffix type $type" -c`" -gt 0 ]; then
+        echo "Yes"
+        true
+    else
+        echo "No"
+        false
+    fi
+}
+
+function clear_mount {
+    path="$1"
+    type="$2"
+
+    if is_mounted "$path" "$type"; then
+        echo "Unmounting..."
+        /bin/umount "$path" || error "umount($path)"
+    fi
+}
+
+function ensure_mounted {
+    dev="$1"
+    path="$2"
+    type="$3"
+    
+    if ! is_mounted "$path" "$type"; then
+        echo "Mounting..."
+        /bin/mount "$dev" "$path"
+    fi;
 }
 

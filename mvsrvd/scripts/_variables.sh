@@ -24,5 +24,5 @@ srv_path="${MYOTTD_SERVERS_DIR}/${srv_name}"
 vg_name="myottd_${MODE}"
 lv_name="srv_${srv_name}_data"
 lv_size="20M"
-
+lv_path="/dev/${vg_name}/${lv_name}"
 
