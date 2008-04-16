@@ -1,8 +1,23 @@
 #!/bin/sh
 
+    srv_name="$1"
+  context_id="$2"
+     net_dev="$3"
+      net_ip="$4"
+  net_prefix="$5"
+     lv_size="$6"
+
 SCRIPT_PATH=/home/terom/myottd-dev/mvsrvd/scripts
 . $SCRIPT_PATH/_variables.sh
 . $SCRIPT_PATH/_functions.sh
+
+#                       arg_name
+required_argument       srv_name            "$fmt_srv_name"
+required_argument       context_id          "$fmt_numeric"
+required_argument       net_dev             "$fmt_if_dev"
+required_argument       net_ip              "$fmt_if_ip"
+required_argument       net_prefix          "$fmt_numeric"
+required_argument       lv_size             "$fmt_lv_size"
 
 using_dir "$srv_path"
     #           vg_name     lv_name     hd_size     mnt_point

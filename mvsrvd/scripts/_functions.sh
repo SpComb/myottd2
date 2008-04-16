@@ -5,17 +5,38 @@ function error {
     exit 1
 }
 
+function matches {
+    value="$1"
+    regexp="$2"
+
+    echo "$value" | grep -i -E -- "$regexp" > /dev/null
+}
+
+function required_argument {
+    arg_name="$1"
+    arg_fmt="$2"
+    value="${!arg_name}"
+
+    if [ -z "$value" ]; then
+        error "Missing required argument '$arg_name'"
+    fi
+    
+    if ! matches "$value" "$arg_fmt"; then
+        error "Invalid value for argument '$arg_name'"
+    fi
+}
+
 function using_dir {
     name="$1"
 
     
     if [ ! -d "$name" ]; then
         echo "Create dir '$name'..."
-        /bin/mkdir "$name" || error "mkdir($name)"
+        /bin/mkdir -- "$name" || error "mkdir($name)"
     fi;
     
     echo "Entering dir '$name'..."
-    pushd "$name" > /dev/null || error "pushd($name)"
+    pushd -- "$name" > /dev/null || error "pushd($name)"
 }
 
 function leave_dir {
@@ -30,7 +51,7 @@ function create_sym {
 
     echo "Create symlink $name -> $target" 
 
-    ln -s "$target" "$name" || error "ln($target, $name)"
+    ln --symbolic --verbose -- "$target" "$name" || error "ln($target, $name)"
 }
 
 function create_fifo {
@@ -39,7 +60,7 @@ function create_fifo {
 
     echo "Create fifo $name ($mode)"
 
-    /usr/bin/mkfifo "$name" --mode="$mode" || error "mkfifo($name, $mode)"
+    /usr/bin/mkfifo --mode="$mode" -- "$name" || error "mkfifo($name, $mode)"
 }
 
 function create_dev {
@@ -50,7 +71,7 @@ function create_dev {
 
     echo "Create device $name as $major.$minor ($mode)"
 
-    /bin/mknod "$name" c "$major" "$minor" --mode="$mode" || error "mknod($name, $major, $minor, $mode)"
+    /bin/mknod --mode="$mode" -- "$name" c "$major" "$minor" || error "mknod($name, $major, $minor, $mode)"
 }
 
 function create_dir {
@@ -59,7 +80,7 @@ function create_dir {
 
     echo "Create dir $name ($mode)"
 
-    /bin/mkdir "$name" --mode="$mode" || error "mkdir($name, $mode)"
+    /bin/mkdir --mode="$mode" -- "$name" || error "mkdir($name, $mode)"
 }
 
 function create_file {
@@ -68,7 +89,7 @@ function create_file {
 
     echo "Create file $name with contents: $data"
 
-    /bin/echo "$data" > "$name" || error "echo($name, $data)"
+    echo "$data" > "$name" || error "echo($name, $data)"
 }
 
 function set_barrier {
@@ -76,7 +97,7 @@ function set_barrier {
 
     echo "Set --barrier attribute on '$dir'"
 
-    /usr/sbin/setattr --barrier "$dir" || error "setattr_barrier($dir)"
+    /usr/sbin/setattr --barrier -- "$dir" || error "setattr_barrier($dir)"
 }
 
 function create_lv {
@@ -87,10 +108,10 @@ function create_lv {
 
     echo "Create an LV called /dev/${vg_name}/${lv_name} of size $lv_size and mount on $mnt_point"
 
-    /sbin/lvcreate --size="$lv_size" --name="$lv_name" "$vg_name" || error "lvcreate($vg_name, $lv_name, $lv_size)"
-    /sbin/mkfs.ext3 /dev/${vg_name}/${lv_name} || error "mkfs.ext3($vg_name, $lv_name)"
-    /bin/mkdir $mnt_point || error "mkdir($mnt_point)"
-    /bin/mount /dev/${vg_name}/${lv_name} $mnt_point || error "mount($vg_name, $lv_name, $mnt_point)"
+    /sbin/lvcreate --size="$lv_size" --name="$lv_name" -- "$vg_name" || error "lvcreate($vg_name, $lv_name, $lv_size)"
+    /sbin/mkfs.ext3 "/dev/${vg_name}/${lv_name}" || error "mkfs.ext3($vg_name, $lv_name)"
+    /bin/mkdir -- "$mnt_point" || error "mkdir($mnt_point)"
+    /bin/mount -- "/dev/${vg_name}/${lv_name}" "$mnt_point" || error "mount($vg_name, $lv_name, $mnt_point)"
 }
 
 function remove_lv {
@@ -130,18 +151,24 @@ function mount_union {
     shift; 
 
     echo "Mounting unionfs on '$mount_point':"
+    
+    for branch in "$@"; do
+        dir_path="${branch%=*}"
 
-    for branch in $*; do
+        if [ ! -d "$dir_path" ]; then
+            error "$dir_path is not a dir!"
+        fi
+
         if [ -z "$dirs" ]; then
             dirs="$branch"
         else
             dirs="$branch:$dirs"
         fi
 
-        echo "$branch"
+        echo " -> $branch"
     done;
 
-    /usr/bin/funionfs -o allow_other,dirs=$dirs none $mount_point || error "funionfs($dirs, $mount_point)"
+    /usr/bin/funionfs -o "allow_other,dirs=$dirs" none "$mount_point" || error "funionfs($dirs, $mount_point)"
 }
 
 function vserver_start {
@@ -149,7 +176,7 @@ function vserver_start {
 
     echo "Starting vserver '$srv_name'..."
 
-    /usr/sbin/vserver "$srv_name" start || error "vserver_start($srv_name)"
+    /usr/sbin/vserver -- "$srv_name" start || error "vserver_start($srv_name)"
 }
 
 function vserver_stop {
@@ -157,7 +184,7 @@ function vserver_stop {
 
     echo "Stopping vserver '$srv_name'..."
 
-    /usr/sbin/vserver "$srv_name" stop || error "vserver_stop($srv_name)"
+    /usr/sbin/vserver -- "$srv_name" stop || error "vserver_stop($srv_name)"
 }
 
 function is_mounted {
@@ -166,7 +193,7 @@ function is_mounted {
 
     echo -n "Checking if '...$suffix' ($type) is mounted... "
 
-    if [ "`/bin/mount | /bin/grep "$suffix type $type" -c`" -gt 0 ]; then
+    if matches "`/bin/mount`" "$suffix type $type"; then
         echo "Yes"
         true
     else
@@ -181,7 +208,7 @@ function clear_mount {
 
     if is_mounted "$path" "$type"; then
         echo "Unmounting..."
-        /bin/umount "$path" || error "umount($path)"
+        /bin/umount -- "$path" || error "umount($path)"
     fi
 }
 
@@ -192,7 +219,7 @@ function ensure_mounted {
     
     if ! is_mounted "$path" "$type"; then
         echo "Mounting..."
-        /bin/mount "$dev" "$path"
+        /bin/mount -- "$dev" "$path"
     fi;
 }
 
