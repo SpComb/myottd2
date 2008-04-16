@@ -10,8 +10,8 @@
 #define OTTD_PATH "/ottd/openttd"
 #define OTTD_NAME "openttd"
 #define OTTD_ARGS "-D"
-#define OTTD_CONSOLE_IN "/ottd/console-in"
-#define OTTD_CONSOLE_OUT "/ottd/console-out"
+#define OTTD_CONSOLE_IN "/console-in"
+#define OTTD_CONSOLE_OUT "/console-out"
 
 /* perror + exit */
 void die (char *msg) {
