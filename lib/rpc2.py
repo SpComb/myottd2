@@ -1,4 +1,5 @@
 from twisted.internet import protocol, defer
+from twisted.python import failure, log
 
 import buffer
 
@@ -36,7 +37,7 @@ class RPCProtocol (buffer.StreamProtocol, protocol.Protocol, object) :
         return d
     
     def processCommand (self, buf) :
-        type = buf.readEnum(self.CMD_TYPES)
+        type = buf.readEnum(self.RECV_COMMANDS)
 
         type_func = getattr(self, "process_%s" % type)
 
@@ -53,7 +54,7 @@ class RPCProtocol (buffer.StreamProtocol, protocol.Protocol, object) :
         self._popCall().errback(desc)
 
     def process_call (self, buf) :
-        method = buf.readEnum(self.RECV_COMMANDS)
+        method = buf.readVarLen('B')
 
         args = readMany(buf)
         
@@ -67,7 +68,8 @@ class RPCProtocol (buffer.StreamProtocol, protocol.Protocol, object) :
             ret = func(*args)
         except Exception, e :
             self.handle_error(failure.Failure())
-            raise
+
+            return
 
         if isinstance(ret, defer.Deferred) :
             ret.addErrback(self.handle_error).addCallback(self.handle_result)
@@ -82,9 +84,14 @@ class RPCProtocol (buffer.StreamProtocol, protocol.Protocol, object) :
         self.send(buf)
 
     def handle_error (self, failure) :
+        log.err("Error in RPC command handler:")
+        failure.printBriefTraceback()
+
         buf = self.startCommand('err')
 
-        writeIem(buf, failure.getErrorMessage())
+        writeItem(buf, failure.getErrorMessage())
+
+        self.send(buf)
     
     def hook_preCall (self, method, args) :
         """

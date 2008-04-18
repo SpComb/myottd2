@@ -6,6 +6,8 @@ class RPCClient (rpc2.RPCProtocol) :
         self.factory.haveRPC(self)
 
 class RPCCallFactory (protocol.ClientFactory) :
+    protocol = RPCClient
+
     def __init__ (self, host, port, method, *args) :
         reactor.connectTCP(host, port, self)
 
@@ -14,9 +16,12 @@ class RPCCallFactory (protocol.ClientFactory) :
         self.d = defer.Deferred()
 
     def clientConnectionFailed (self, connector, failure) :
-        self.d.errback(failure)
-        self.d = None
+        if self.d :
+            self.d.errback(failure)
+            self.d = None
     
+    clientConnectionLost = clientConnectionFailed
+     
     def haveRPC (self, proto) :
         self.rpc = proto
         
