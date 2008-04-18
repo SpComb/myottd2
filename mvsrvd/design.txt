@@ -279,3 +279,11 @@ Stop Server Action :
 
     # how well does this work? What if the init process is misbehaving?
 
+
+
+
+
+Notes :
+    The user must not be able to override /sbin/* or /ottd/openttd with their own binary!
+    
+

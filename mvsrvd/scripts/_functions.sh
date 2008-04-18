@@ -219,7 +219,7 @@ function ensure_mounted {
     
     if ! is_mounted "$path" "$type"; then
         echo "Mounting..."
-        /bin/mount -- "$dev" "$path"
+        /bin/mount -- "$dev" "$path" || error "mount($dev, $path)"
     fi;
 }
 

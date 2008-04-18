@@ -2,9 +2,18 @@ from twisted.internet import protocol, defer
 
 import buffer
 
-class RPCProtocol (buffer.BufferProtocol, protocol.Protocol, object) :
+class RPCError (Exception) :
+    pass
+
+class RPCProtocol (buffer.StreamProtocol, protocol.Protocol, object) :
     # what command to use for sending errors
     ERROR_COMMAND = None
+
+    SEND_COMMANDS = RECV_COMMANDS = [
+        'call',
+        'ret',
+        'err'
+    ]
 
     def __init__ (self) :
         super(RPCProtocol, self).__init__()
@@ -12,8 +21,10 @@ class RPCProtocol (buffer.BufferProtocol, protocol.Protocol, object) :
         self.calls = []
 
     def invoke (self, method, *args) :
-        o = self.startCommand(method)
+        o = self.startCommand('call')
         
+        o.writeVarLen('B', method)
+
         writeMany(o, args)
 
         self.send(o)
@@ -25,6 +36,23 @@ class RPCProtocol (buffer.BufferProtocol, protocol.Protocol, object) :
         return d
     
     def processCommand (self, buf) :
+        type = buf.readEnum(self.CMD_TYPES)
+
+        type_func = getattr(self, "process_%s" % type)
+
+        return type_func(buf)
+
+    def process_ret (self, buf) :
+        val = readItem(buf)
+
+        self._popCall().callback(val)
+
+    def process_err (self, buf) :
+        desc = readItem(buf)
+
+        self._popCall().errback(desc)
+
+    def process_call (self, buf) :
         method = buf.readEnum(self.RECV_COMMANDS)
 
         args = readMany(buf)
@@ -32,13 +60,40 @@ class RPCProtocol (buffer.BufferProtocol, protocol.Protocol, object) :
         ret = None
 
         try :
-            ret = getattr(self, "rpc_%s" % method)(*args)
+            func = getattr(self, "rpc_%s" % method)
+
+            self.hook_preCall(method, args)
+            
+            ret = func(*args)
         except Exception, e :
-            self.error(e)
+            self.handle_error(failure.Failure())
             raise
 
         if isinstance(ret, defer.Deferred) :
-            ret.addErrback(self.error)
+            ret.addErrback(self.handle_error).addCallback(self.handle_result)
+        else :
+            self.handle_result(ret)
+
+    def handle_result (self, ret) :
+        buf = self.startCommand('ret')
+
+        writeItem(buf, ret)
+
+        self.send(buf)
+
+    def handle_error (self, failure) :
+        buf = self.startCommand('err')
+
+        writeIem(buf, failure.getErrorMessage())
+    
+    def hook_preCall (self, method, args) :
+        """
+            This is called with the method name and the given arguments before the method itself is called.
+
+            The argument list may be modified
+        """
+
+        pass
 
     def error (self, error) :
         o = self.startCommand(self.ERROR_COMMAND)
