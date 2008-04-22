@@ -1,0 +1,311 @@
+mauthd:
+    Manages MyOTTD account authentication
+    
+    register_user <username> <pw_hash> <email> <success_url> -> user_id
+        New user wants to register. We need to create the row in the database, and send the verification email.
+        
+        Once the verification suceeds, the user will be redirected to the given success_url, which may contain
+        python named string formatting codes for the following tokens:
+            uid         - the numeric user ID
+            username    - the username
+    
+    check_login <username> <pw_hash> -> user_id
+        User wants to login.
+    
+    change_password <user_id> <new_password> -> ok
+        Change your password
+    
+    change_email <user_id> <new_email> -> ok
+        Change your password. You will be required to verify your email again before you can login
+    
+    forgot_password <email> -> ok
+        Send a password reset request to the account with the given email
+    
+    http:
+        verify?uid=<user_id>&token=<token>
+            This is the URL sent in the verification email. When this is requested, the account is verified.
+            
+
+mvsrvd:
+    Manages the linux-vservers and their configuration/lvm devices/filesystem mounts
+    
+    backend:
+        create <name> <ctx_id> <net_dev> <net_ip> <net_prefix> <lv_size>
+        mount <name> <version>
+        start <name> <port>
+        stop <name>
+        unmount <name>
+        destroy <name>
+        
+    db:
+        users - select
+        servers - select/insert/update
+        ottd_versions - select
+        
+    xmlrpc:
+        create_server <owner_id> <srv_class> -> server_id
+            Creates a new server.
+            
+            * log the creation attempt in the audit log
+            * look up the given owner and server class, and calulate the server's resource limits from these
+            * insert the server into the database, which gives the server id, context id, ip address
+              and port (these are stored in the database). 
+            * invoke the backend-create call
+                * create the lvm device
+                * create the filesystem structure (guest-root and vserver-config)
+            
+            This must be done within a postgresql transaction, so if the server creating fails, the row is not
+            actually inserted into the database (how does this affect server ID generation?). The log output of
+            these operations and the server creation script is also returned and shown to the user.
+            
+        server_status <server_id> -> { is_mounted, is_running, uptime_desc, load_avg_desc }
+            Fetch some simple state info for the given server ID.
+            
+        mount_server <server_id> -> ok
+            Mounts the filesystem for the given server ID with the server's OpenTTD version (from the database),
+            but doesn't start it. If the filesystem is already mounted (irregardless of the OpenTTD version), 
+            this is a no-op.
+            
+            * log the mount attempt in the audit log
+            * look up the server name, OpenTTD version and port from the database
+            * invoke the backend-mount call
+                * mounts the filesystem corresponding to the OpenTTD version
+                
+        update_server_version <server_id> -> ok
+            Remount the vserver's filesystem to change it to a new version of OpenTTD.
+            
+            * log the restart attempt in the audit log
+            * look up the server name, OpenTTD version and port from the database
+            * invoke the backend-mount call                
+        
+        start_server <server_id> -> ok
+            Starts up an already created server, (re)mounting the correct version of OpenTTD if needed.
+            
+            * log the start attempt in the audit log
+            * look up the server name, OpenTTD version and port from the database
+            * invoke the backend-start call
+                * mounts the filesystem if needed (backend-mount)
+                * prepares the NAT for the server's public port
+                * starts the vserver
+            
+        stop_server <server_id> -> ok
+            Stop a running server
+            
+            * log the stop attempt in the audit log
+            * look up the server name from the database
+            * invoke the backend-stop call
+                * the procedure to stop a vserver isn't 100% clear yet, but probably we need to first invoke
+                  /sbin/halt, and then after 10s kill off every remaining process
+                * unmounts the filesystem (really? Perhaps it would be better not to. See idle-timeout under TODO)
+            
+        destroy_server <server_id> ... -> ok
+            Erase a server from the filesystem and database. The server must not be running. The record in the
+            database probably won't be deleted, but rather marked as inactive (port re-use?).
+             
+            THIS REALLY NEEDS SOME KIND OF SYSTEM FOR EXTERNAL VERIFICATION! The procedure for deleting a server
+            really needs some more confirmation than just calling this XML-RPC method. Perhaps inspect the 
+            server's filesystem in some way?
+            
+            * log the destroy attempt in the audit log
+            * ensure that the server isn't running
+            * verify the destroy action... somehow
+            * mark the server for deletion in the DB
+            * invoke the backend-destroy call
+                * unmount the server's filesystem if needed
+                * Remove the server's data-lv
+                * Empty out the file structure for the server
+    
+    todo:
+        handle vserver idle timeouts
+ 
+mfiled:
+    Manages the guest-root filesystems of the openttd servers
+    
+    xmlrpc:
+        verify_destroy <server_id> -> yes|no
+            Verify that the given server is marked for deletion.
+        
+        erase_server <server_id> ...
+            Prepare the given server for erasing
+            
+            * mark it so that verify_destory returns True
+        
+        file_list <server_id> <dir_path> -> [ {type, filename, filesize, perms, mtime} ]
+            List the files in the directory at the given path in the filesystem of the given vserver.
+            
+            Returns a list of file items:
+                type                string, "dir", "file", "dev", "fifo", "other"
+                filename            the filename...
+                filesize            size of the file in bytes
+                perms               the permissions on the file as a string "rwx", only as relevant to other 
+                                    xml-rpc calls and the openttd process itself (are these two different?)
+                mtime               when the file was modified (unix timestamp, utc)
+            
+            The list includes the "." and ".." entries.
+            
+            * invoke mvsrvd.mount_server to ensure that the server is mounted properly
+        
+        file_info <server_id> <file_path> -> {type, filename, filesize, perms, mtime}
+            Return a single entry of the same type that file_list returns, but for a given file
+            
+            * invoke mvsrvd.mount_server to ensure that the server is mounted properly
+        
+        file_delete <server_id> <path> <type> -> ok
+            Delete the given file. Type is either "file" or "dir", and path must point to a file of the same type,
+            or the deletion will not succeed. Directories do not need to be empty for this to succeed.
+        
+        file_get_contents <server_id> <path> -> file-data
+            Fetch the contents of the given file as a string.
+        
+        file_put_contents <server_id> <path> <data> -> ok
+            Replace the contents of the given file with the given data.
+            
+    http:
+        download?server=<server_id>&auth=<auth_token>&path=<server_path>&redirect=<url>
+            Download the file at the given path in the given server.
+        
+        upload?server=<server_id>&auth=<auth_token>&path=<server_path>&mode=<file_mode>&redirect=<url>
+            Upload a file into the given path in the given server. If the path points to a dir, the file is uploaded
+            into that dir with the name given in the HTTP headers. If the path points to a file, the file is saved
+            directly under that path, ignoring what's in the HTTP headers. The optional mode argument specifies
+            what permissions to give the file.
+        
+        common params:
+            auth:
+                Auth_token is checked against the user's cookies, the session-info in the database (from mwebd), and
+                the file permissions (it should be possible to download files anonymously, if so permitted).
+            
+            redirect:
+                Redirect to the given path after the operation has completed (either succsefully or unsuccesfully).
+                The URL will have the arguments "?mfiled_status=<ok|err>[&mfiled_err=<error_msg>]" appended to it.
+                
+mottdd: 
+    Manages the OpenTTD processes running inside the vservers (start-with-args, stop, status, stdin, stdout,
+    stderr).
+    
+    The openttd servers inside the linux-vservers are run by ottdinit, which provides mottdd a way to manage them.
+    This happens either via two fifos or a socket - not sure which, but probably the fifos (reliable).
+    
+    The protocol that ottdinit uses is specified more accurately elsewhere, but it supports roughly these
+    operations:
+    
+    backend:
+        commands:
+            status -> { is_running, uptime_seconds }
+            start <cmd_args> -> ok|err
+            kill <signal> -> ok|err
+            stdin <data>
+        
+        events:
+            stdout <data>
+            stderr <data>
+            exit <status>
+            killed <signal>
+    
+    xmlrpc:
+        server_status <server_id> -> { is_vserver_running, is_ottd_running, ottd_version, ottd_uptime }
+            Short server status
+        
+        server_details <server_id> -> {
+            is_vserver_running, is_ottd_running
+            ottd_version, ottd_uptime,
+            ottd_cmdline        # what commandline OpenTTD was last launched with
+        
+        server_start <server_id> <args>
+            Start the OpenTTD server, running with the given arguments
+        
+        server_stop <server_id>
+            Stop the OpenTTD server. The vserver stays running, but idle timeouts apply.
+            
+            * attempt to quit it nicely (kill 15, "quit" to console?)
+            * kill it rudely (kill 9)
+            * kill the vserver
+        
+        server_version <server_id> <version> -> ?
+            Change the version of the OpenTTD server. If the server is running, it is stopped.
+            
+        server_console_fetch <server_id> <count> -> [ {type, ts, line } ]
+            Fetch the count most recent lines of console input/output, oldest-newest.
+            
+            returns :
+                type        - one of stdout|stderr|stdin|log
+                ts          - timestamp of the event
+                line        - the line of data
+                
+                log is stuff for each of the actions here - start, stop, version
+        
+        server_console_write <server_id> <line> -> ok
+            Write the given line of data to OpenTTD's stdin. The line will also show up in what
+            server_console_fetch returns (to provide some context)
+        
+        server_console_stream <server_id> <addr> <port> -> ok
+            Request that the console be streamed somewhere. A connection to the given addr:port is opened.
+            
+            The remote end must send the magic string "MYOTTD_CONSOLE_STREAM_CLIENT_01" within 30 seconds, or
+            the connection is closed. If the remote end sends anything else, the connection is closed right
+            away.
+            
+            After receiving the client magic string, the server sends the magic string
+            "MYOTTD_CONSOLE_STREAM_SERVER_01", after which the normal protocol initiates.
+            
+            Data is read/written to the socket in <uns8 type><uns8 len><len*char data> tuples.
+                0x00 = stdout (server -> client only)
+                0x01 = stderr (server -> client only)
+                0x02 = stdin (server <-> client)
+            
+            The XMLRPC method returns once the connection has been made and magic strings exchanged succesfully.
+        
+        server_config_path <server_id> -> path
+            Fetch the path of the server's config file (usually /ottd/openttd.cfg) for editing it in the web
+            interface.
+            
+mwebd:
+    Handles the dynamic web pages
+    
+    http:
+        too many to describe here...
+
+mlogd:
+    Handles the audit log entries for the daemons
+    
+    xmlrpc:
+        audit_event <method> <args> -> ok
+            Log the given message. The authentication info is used to determine the source.
+            
+            The action associated with the given event should not proceed unless this method returns succesfully.
+
+mrcond:
+    Offers remote access to an OpenTTD server's console over SSH. May or may not be implemented yet.
+    
+    xmlrpc:
+        pubkey_add <server_id> <pubkey_sig>
+            Associate the given public key with the given server.
+
+mircbotd:
+    Handles the IRC connections for the IRC bots.
+    
+    Not going to be implemented yet, but this would accept commands from IRC, and relay certain events
+    forwards to IRC.
+    
+TODO:
+    mvsrvd: 
+        the start script needs to set up iptables
+        the start script needs to clean up /sbin/ (could this be mounted read-only somehow?)
+        the mount/unmount scripts
+    
+    * need to figure out resource limits for servers somehow. Until I can come up with something sensible,
+      each server will be allocated enough resources to run any reasonable game (although perhaps not quite a
+      2048x2048 map with 500 trains...). Servers will also have idle timeouts:
+        * openttd gets shut down if nobody joins it inside 24h (how to monitor this? TCP connections?)
+            * this portion is implemented in mottdd
+            
+        * the vserver gets shut down if the openttd server is idle for 1h (but naturally, it can be started up 
+          again)
+            * this portion is implemented in mvsrvd, in combination with mottdd (a timestamp in the db?)
+            * the vserver's filesystem probably shouldn't be unmounted right away, but perhaps after some idle
+              timeout (another 24h?)
+            
+            
+        
+        
+        

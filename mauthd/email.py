@@ -1,5 +1,4 @@
-from twisted.internet import reactor
-from twisted.internet.defer import Deferred
+from twisted.internet import reactor, defer
 from twisted.mail.smtp import ESMTPSenderFactory
 import cStringIO
 
@@ -7,10 +6,12 @@ def send_email (smtp_server, from_addr, to_addr, body) :
     d = defer.Deferred()
 
     sender = ESMTPSenderFactory(
-        None, None
+        None, None,
         from_addr, to_addr,
         cStringIO.StringIO(body),
-        d
+        d,
+        requireAuthentication=False,
+        requireTransportSecurity=False
     )
 
     reactor.connectTCP(smtp_server, 'smtp', sender)
@@ -28,6 +29,10 @@ def _build_email (template, required_tokens, **values) :
 
 def build_verify_email (**kwargs) :
     return _build_email("""\
+From: %(from_addr)s\r
+To: %(email)s\r
+Subject: %(site_name)s Account Registration / Verification\r
+\r
 Hi!
 
 A new account was registered at %(site_url)s using this email address.
@@ -49,5 +54,5 @@ Thank you for registering!
 %(site_url)s
 %(admin_contact)s
 
-    """, "site_name site_url admin_contact username verify_token email verify_url".split(), kwargs)
+    """, "from_addr site_name site_url admin_contact username verify_token email verify_url".split(), **kwargs)
     

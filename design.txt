@@ -31,14 +31,13 @@ Database schema:
     created
     last_login
  
- * versions (OpenTTD versions)
-    tag (rel_060, rel_053, r12686, rel_060rc4)
-    name (0.6.0, r12686)
-    date (when it was released)
+ * ottd_versions (OpenTTD versions)
+    name (rel_060, rel_053, r12686, rel_060rc4)
+    description (0.6.0, r12686)
+    created (when it was released)
     type (stable, oldstable, nightly, updated whenever these change, perhaps these should be stored elsewhere than in a column?)
  
  * resources (server resource limitation classes)
-    id
     name
     hdd (in MB)
     cpu (in ... percentage? Probably more complicated than that)
@@ -52,10 +51,9 @@ Database schema:
     owner ( -> users.id)
     name
     title
-    port ( -> ports.port)
-    version ( -> versions.tag)
-    status (run, stop, crash)
-    res_class ( -> resources.id)
+    port 
+    version ( -> versions.name)
+    res_class ( -> resources.name)
 
 What runs on the VServers :
     daemond - manage a remote daemon (OpenTTD dedicated server, in this case)
