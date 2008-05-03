@@ -1,7 +1,7 @@
 from twisted.internet.defer import returnValue, inlineCallbacks
 
 from lib import utils, api
-import db, verify, email, settings
+import db, verify, email, settings, errors
 
 @inlineCallbacks
 def xmlrpc_register_user (ctx, username, pw_hash, email_addr, success_url) :
@@ -42,22 +42,6 @@ def xmlrpc_register_user (ctx, username, pw_hash, email_addr, success_url) :
 
     returnValue( user_id )
 
-class LoginError (api.Fault) :
-    def __str__ (self) :
-        return "Login error"
-
-class LoginVerifyAccountError (LoginError) :
-    def __str__ (self) :
-        return "Login error (Account not verified)"
-
-class LoginUsernameError (LoginError) :
-    def __str__ (self) :
-        return "Login error (Unknown username)"
-
-class LoginPasswordError (LoginError) :
-    def __str__ (self) :
-        return "Login error (Bad password)"
-
 @inlineCallbacks
 def xmlrpc_check_login (ctx, username, pw_hash) :
     """
@@ -69,19 +53,19 @@ def xmlrpc_check_login (ctx, username, pw_hash) :
     username_ok, verify_ok, password_ok, user_id = yield db.check_login(username, pw_hash)
 
     if not username_ok :
-        raise LoginUsernameError()
+        raise errors.CheckLogin_Username()
 
     elif not verify_ok :
-        raise LoginVerifyAccountError()
+        raise errors.CheckLogin_Verify()
 
     elif not password_ok :
-        raise LoginPasswordError()
+        raise errors.CheckLogin_Password()
 
     else :
         returnValue( user_id )
 
 @inlineCallbacks
-def http_verify (ctx, user_id, token) :
+def http_verify (ctx, uid, token) :
     """
         Attempt to verify the given user with the given token. If it succeeds, the verification url should be invalidated,
         and the account marked as verified.
@@ -89,22 +73,14 @@ def http_verify (ctx, user_id, token) :
         Shows a message to the user, and possibly redirects them to the success_url defined for the verify action
     """
 
-    verify_ok, user_ok, user_verified, username, success_url = yield db.handle_verify(user_id, token)
+    username, success_url = yield db.handle_verify(user_id, token)
     
-    if verify_ok :
-        success_url = utils.build_url(success_url,
-            uid         = user_id,
-            username    = username,
-        )
+    success_url = utils.build_url(success_url,
+        uid         = user_id,
+        username    = username,
+    )
 
-        returnValue( (success_url, "Account '%s' successfully activated" % (username)) )
-    else :
-        if not user_ok :
-            returnValue( (None, "No such user. Perhaps the verification email has already expired?") )
-        elif not user_verified :
-            returnValue( (None, "Bad token. Are you sure you have the entire link from the email correctly?") )
-        else :
-            returnValue( (None, "User has already been verified!") )
+    ctx.redirectTo(success_url)
 
-    
+    returnValue( ("Account '%s' successfully activated" % username) )
 

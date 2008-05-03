@@ -17,10 +17,59 @@
 from twisted.internet import reactor
 from twisted.web import xmlrpc, resource, server
 
+from twisted.internet.defer import returnValue, inlineCallbacks, maybeDeferred
+
+import traceback, sys
+
+class FaultInfo (xmlrpc.Fault) :
+    def __init__ (self, code, name, description) :
+        self.code = code
+        self.name = name
+        self.description = description
+
+        xmlrpc.Fault.__init__(self, code, "[%s] %s" % (self.name, self.description))
+
+    def fault (self, audit_id) :
+        return xmlrpc.Fault(self.code, "(%d) [%s] %s" % (audit_id, self.name, self.description))
+
+def fault (code, name, description) :
+    """
+        Define a new fault type.
+
+        Returns a function that, when called, will create and return a new FaultInfo object with the given code and string
+    """
+
+    def _fault () :
+        return FaultInfo(code, name, description)
+    
+    return _fault
+
+# after method fault
+import api_errors as errors
+
 class Context (object) :
     """
         The common context provided to xmlrpc/http method calls
     """
+
+    # the API method name
+    method = None
+
+    # the remote client's IP address (note: v4 or v6)
+    client = None
+
+    # a string describing how the request was authenticated
+    # <auth_method>:<auth_username>
+    auth_info = None
+
+    auth_method = None
+    auth_user = None
+    
+    # set by Logger.api_audit
+    # audit_id
+
+    def _prepare (self) :
+        self.auth_info = "%s:%s" % (self.auth_method, self.auth_user)
 
     def getAuthMethod (self) :
         """
@@ -41,28 +90,7 @@ class Context (object) :
             Get the ip address of the remote client
         """
 
-class Fault (xmlrpc.Fault) :
-    faultCode = 8999
-    faultString = None
-
-    def __init__ (self) :
-        if not self.faultString :
-            self.faultString = str(self)
-
-        xmlrpc.Fault(self.faultCode, self.faultString)
-
-class AuthFormatError (Fault) :
-    def __init__ (self, what) :
-        self.faultString = self.faultString % what
-
-        Fault.__init__(self)
-
-    faultCode = 8111
-    faultString = "Invalid format of authentication/argument data (%s)"
-
-class AuthMethodError (Fault) :
-    faultCode = 8112
-    faultString = "Invalid authentication method"
+        return self.client
 
 class XMLRPCHandler (xmlrpc.XMLRPC) :
     """
@@ -83,17 +111,17 @@ class XMLRPCHandler (xmlrpc.XMLRPC) :
 
         xmlrpc.XMLRPC.__init__(self)
     
-    def _getFunction (self, functionPath) :
+    def _getFunction (self, func_name) :
         """
             Locate the given function by name
         """
 
-        func = self.api._findXMLRPCFunction(functionPath)
+        func = self.api._findXMLRPCFunction(func_name)
 
         if not func :
-            raise xmlrpc.NoSuchFunction(self.NOT_FOUND, "function %s not found" % functionPath)
+            raise xmlrpc.NoSuchFunction(self.NOT_FOUND, "function %s not found" % func_name)
 
-        return self._requestHandler(functionPath, func)
+        return self._requestHandler(func_name, func)
     
     def render_POST (self, request) :
         """
@@ -104,10 +132,11 @@ class XMLRPCHandler (xmlrpc.XMLRPC) :
 
         return xmlrpc.XMLRPC.render_POST(self, request)
 
-    def _requestHandler (self, name, func) :
+    def _requestHandler (self, func_name, func) :
+        @inlineCallbacks
         def _wrapper (*args) :
             if len(args) != 2 or not (isinstance(args[0], list) and isinstance(args[1], list)) or not args[0] :
-                raise AuthFormatError("auth/args tuples")
+                raise errors.Request_Format()
             
             # handle the auth data
             auth_data, func_args = args
@@ -116,38 +145,67 @@ class XMLRPCHandler (xmlrpc.XMLRPC) :
 
             auth_func = getattr(self, "auth_%s" % auth_method, None)
 
-            if not func :
-                raise AuthMethodError()
+            if not auth_func :
+                raise errors.Auth_Method()
             
             # build the context
             ctx = Context()
+            ctx.method = func_name
+            ctx.client = self._current_request.getClientIP()
             ctx.request = self._current_request
-            ctx.client = ctx.request.getClientIP()
             ctx.auth_method = auth_method
 
             # this raises a fault on error
             auth_func(ctx, auth_data, args)
 
-
             # we have now authenticaticated
+            ctx._prepare()
 
             # XXX: audit logs
             
             # now, call the method itself
-            ret_value = func(ctx, *func_args)
+            try :
+                # it's deferred...
+                ret_value = yield func(ctx, *func_args)
+
+            except FaultInfo, e :
+                # the method handled an error gracefully and raised an appropriate FaultInfo
+                
+                # log it to the db
+                yield self.api.logger.api_log(ctx, "result:fault", (e.code, e.name))
+                
+                # return the fault complete with audit id
+                raise e.fault(getattr(ctx, 'audit_id', -1))
             
+            except Exception, e :
+                # the method encountered an error which it couldn't handle...
+
+                # log it to stderr
+                # XXX: Needs some more info from ctx
+                
+                print >>sys.stderr, """\
+Error while handling method call %s%r for %s from %s :
+\t%s
+                """ % (ctx.method, tuple(func_args), ctx.auth_info, ctx.client,
+                        "\n\t".join(line for line in traceback.format_exc().split('\n')))
+                
+                # return a generic "Internal error"
+                raise errors.Internal()
+
+            yield self.api.logger.api_log(ctx, "result:ok", ret_value)
+
             # ...what's our return format?
-            return ret_value
+            returnValue( ret_value )
 
         return _wrapper
     
     def auth_plain (self, ctx, auth_data, args) :
         if len(args) != 2 :
-            raise AuthFormatError("auth_data")
+            raise errors.Auth_Format()
 
-        ctx.auth_user, ctx.auth_password = auth_data
+        ctx.auth_user, password = auth_data
 
-        ctx.auth_value = self.api._checkAuth(ctx.auth_user, ctx.auth_password)
+        ctx.auth_value = self.api._checkAuth(ctx.auth_user, password)
     
 class HTTPHandler (resource.Resource) :
     """
@@ -168,17 +226,19 @@ class HTTPHandler (resource.Resource) :
         auth_func = getattr(self, "auth_%s" % auth_method, None)
 
         if not func :
-            raise AuthMethodError()
+            raise errors.Auth_Method()
 
         ctx = Context()
-        ctx.request = request
+        ctx.method = self.name
         ctx.client = request.getClientIP()
+        ctx.request = request
         ctx.auth_method = auth_method
 
         # this raises a fault on error
         auth_func(ctx, request.args)
 
         # we are authenticated
+        ctx._prepare()
 
         return self.func(ctx, **dict((key, val[0] if len(val) == 1 else val) for key, val in request.args.iteritems()))
 
@@ -186,29 +246,22 @@ class HTTPHandler (resource.Resource) :
         ctx.auth_user = ctx.auth_password = ""
         ctx.auth_value = None
     
-class AuthUsernameError (Fault) :
-    faultCode = 8121
-    faultString = "Authentication error (Username)"
-
-class AuthPasswordError (Fault) :
-    faultCode = 8122
-    faultString = "Authentication error (Password)"
-
 class APIServer (object) :
-    def __init__ (self, api_module, settings_ns, auth_db) :
+    def __init__ (self, api_module, settings_ns, auth_db, logger) :
         """
             Launch the API server for the given api module using the given settings
                 xmlrpc_path         xmlrpc          the node in the root to use for XMLRPC requests
-                http_port           6910            the port to run the HTTP server on
+                http_port           -               the port to run the HTTP server on
 
             The format of the auth DB is not strictly specified yet - currently it should just be a dict of username -> password
         """
         self.api_module = api_module
         self.auth_db = auth_db
+        self.logger = logger
 
         # settings
         self.http_xmlrpc_path = getattr(settings_ns, 'xmlrpc_path', "xmlrpc")
-        self.http_port = getattr(settings_ns, 'http_port', 6910)
+        self.http_port = getattr(settings_ns, 'http_port')
         
         # the HTTP resource tree root
         self.http_root = resource.Resource()
@@ -245,10 +298,10 @@ class APIServer (object) :
     
     def _checkAuth (self, username, password) :
         if username not in self.auth_db :
-            raise AuthUsernameError()
+            raise errors.Auth_Username()
 
         if self.auth_db[username] != password :
-            raise AuthPasswordError()
+            raise errors.Auth_Password()
 
         return True
 

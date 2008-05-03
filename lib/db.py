@@ -1,9 +1,12 @@
 from twisted.enterprise import adbapi
 from twisted.internet import reactor, threads
 
+def callFromTransaction (func, *args, **kwargs) :
+    return threads.blockingCallFromThread(reactor, func, *args, **kwargs)
+
 class DB (adbapi.ConnectionPool) :
     def __init__ (self, config_ns, db_password) :
-        adbapi.ConnectionPool.__init__(self, "pgdb",
+        adbapi.ConnectionPool.__init__(self, "psycopg2",
             cp_min      = 1,
             cp_max      = 5,
 
@@ -75,37 +78,21 @@ class DB (adbapi.ConnectionPool) :
         else :
             raise ValueError("query returned more than one row (%d)" % len(result))
     
-    def runWithTransaction (self, functions) :
+    def runAsTransaction (self, function, *args, **kwargs) :
         """
-            Used to execute a complex transaction (using the function is hence complex)
-
-            The functions argument is a sequence of (func, args, kwargs) tuples. The function is
-            executed inside the adbapi thread, and called with the same arguments as runInteraction
-            uses.
-            
-            If you want to run a function in userland, use DB.userFunc
+            Used to execute a transaction
         """
 
-        return self.runInteraction(self._runWithTransaction, functions)
+        return self.runInteraction(function, *args, **kwargs)
 
-    def _runWithTransaction (self, trans, functions) :
-        ret = []
-
-        for func, args, kwargs in functions :
-            ret.append(func(trans, *args, **kwargs))
-
-        return ret
-    
-    def wrapUserFunc (self, func) :
+    def wrapAsTransaction (self, func) :
         """
-            Wrap the given function such that it will be run in the reactor thread (MUST return a
-            callback), and the result of that is returned.
-
-            Meant for use with runWithTransaction
+            Meant to be used as a decorator, calls the given function as a transaction
         """
 
-        def _wrapper (trans, *args, **kwargs) :
-            return threads.blockingCallFromThread(reactor, func, *args, **kwargs)
+        def _wrapper (*args) :
+            return self.runAsTransaction(func, *args)
 
         return _wrapper
-            
+
+

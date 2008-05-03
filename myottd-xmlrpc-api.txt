@@ -34,7 +34,7 @@ mvsrvd:
         mount <name> <version>
         start <name> <port>
         stop <name>
-        unmount <name>
+        umount <name>
         destroy <name>
         
     db:

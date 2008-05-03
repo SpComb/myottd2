@@ -7,9 +7,9 @@ users           -- The list of MyOTTD users. People register via the web interfa
                 -- XMLRPC API?).
               
     id          serial          -- The user_id as used in the XMLRPC api
-    username    varchar(32)     -- The username, as used in the username.myottd.net url, username_1 server name
+  U username    varchar(32)     -- The username, as used in the username.myottd.net url, username_1 server name
  N  password    varchar(32)     -- The (hashed) password, used for authenticating in the web and XMLRPC interfaces
-    email       varchar(256)    -- The user's email address, used for forgot-my-password things. Needs to be kept
+  U email       varchar(256)    -- The user's email address, used for forgot-my-password things. Needs to be kept
                                 -- hidden, preferrably with access control
     registered  timestamp       -- When the user registered, i.e. when this row was first inserted into the 
                                 -- database.
@@ -21,7 +21,7 @@ ottd_versions   -- The list of available OpenTTD versions. Contains the info nee
                 -- and the info needed to display it in the GUI.
     
     id          serial          -- (well, why not?)
-    name        varchar(32)     -- The short version name used in the filesystem (e.g. 060, 060-beta1)
+  U name        varchar(32)     -- The short version name used in the filesystem (e.g. 060, 060-beta1)
     description varchar(128)    -- The long version name used in the UI (e.g. 0.6.0, 0.6.0 Beta 1)
     type        varchar(16)     -- The type of version, one of "release", "nightly", "custom".
     available   timestamp       -- When this version was made available
@@ -32,7 +32,7 @@ resource_classes    -- Used to determine the resource limits for OpenTTD servers
     id          serial
     name        varchar(32)     -- The name of the resource class
     
-    disk        integer         -- The size of the data filesystem in MiB.
+    hdd_size    integer         -- The size of the data filesystem in MiB.
     ram         integer         -- The amount of ram available, in KiB
     
 
@@ -40,26 +40,39 @@ servers             -- Used to store information on the available servers, such 
                     -- called, identifying information (port, IP, ctx_id), resource limits, status (activated etc)
                     
     id          serial          -- The server_id as used in the XMLRPC api
-    owner       users(id)       -- The server's owner
-    name        varchar(32)     -- The server's name, as used in the username.myottd.net/servername and vserver name
+  U owner       users(id)       -- The server's owner
+  U name        varchar(32)     -- The server's name, as used in the username.myottd.net/servername and vserver name
  N  title       varchar(256)    -- The server's longer informative description
- N  port        integer         -- The public TCP/UDP server port used by the server
- N  vserver_id  integer         -- The vserver context ID
- N  ip          inet            -- The vserver's internal IP address (10.22.x.y)
+ NU location    server_identifiers(id)  -- The ip/port/ctx_id info for the server
  N  version     ottd_versions(name)     -- The version of OpenTTD that the server should run
     res_class   resource_classes(name)  -- The resource class that the server uses.
-    
-audit_log           -- The audit log for the XMLRPC api
 
+server_locations    -- Used to store ip/port/ctx_id combinations available for use by servers
     id          serial
+  U port        integer         -- The public port to use for IPv4 TCP/UDP for the server
+  U ip          inet            -- The vserver's internal IP address (10.22.x.y or such)
+  U context     integer         -- the vserver context ID
+
+
+
+api_audit           -- The audit log for API methods
+    id          serial          -- The method-call ID
     daemon      varchar(16)     -- What daemon
     method      varchar(64)     -- What method was called
-    client      varchar(128)    -- The client address in <ip>:<port> format
-    when        timestamp       -- When the method was called
-    username    varchar(40)     -- What the authenticated as, in <auth_type>:<auth_username> format 
+ N  client      inet            -- The remote client address
+    ts          timestamp       -- When the method was called
+    auth        varchar(64)     -- How the client authenticated, in <auth_type>:<auth_username> format 
                                 -- e.g. (internal:mvsrvd, public:foousr1)
-    arguments   text            -- The arguments the method was called with, as comma-separated values.
-    
+    arguments   bytea           -- The arguments the method was called with, as a pickled tuple
+
+api_log             -- Additional log output from API methods
+    audit_id    audit_log(id)   -- What audit log entry this corresponds to
+    name        varchar(64)     -- The type of log entry, unspecified format
+    data        bytea           -- Pickled tuple of log data
+
+
+
+
 console_data        -- The console data for the servers
     id          serial
     server      servers(id)     -- What server
