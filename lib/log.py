@@ -44,3 +44,29 @@ class Logger (object) :
             )
             """, getattr(ctx, 'audit_id', None), name, self._serialize(data)
         )
+
+
+DEBUG = 0x01
+INFO = 0x02
+WARNING = 0x03
+ERROR = 0x04
+FATAL = 0x05
+
+def log (level, msg, *args) :
+    if args :
+        msg = msg % args
+    
+    print msg
+
+def _levelFunc (level) :
+    def _wrapper (msg, *args) :
+        return log(level, msg, *args)
+
+    return _wrapper
+
+debug = _levelFunc(DEBUG)
+info = _levelFunc(INFO)
+warning = _levelFunc(WARNING)
+error = _levelFunc(ERROR)
+fatal = _levelFunc(FATAL)
+

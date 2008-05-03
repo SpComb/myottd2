@@ -1,0 +1,69 @@
+ottdinit
+
+This is the code that runs inside the vservers.
+
+The vservers only contain three exeutables, and a running vserver will contain 2-3 processes:
+
+    /sbin/init
+    /sbin/daemon
+    /ottd/openttd
+
+
+init is what is executed by linux-vserver after setting up the vserver. It is executed with stdin/out/err pipes linked
+to the process that launches the start-server.sh script, i.e. mvsrvd. It's a bit unclear how /sbin/init works under
+linux-vserver, but this should be enough to get going. It appears to be init's responsibility to close its
+stdin/out/err pipes (we could keep them open and use them, but I'm not sure if that's a good idea - it just seems
+proper to close them and keep it isolated).
+
+On shutdown, pid=1 is signalled with signal SIGINT. What happens if it doesn't die away? I assume it gets signal 15 and
+then after five seconds, signal 9. Need to investigate.
+
+Anyways, the design goal here is that the three processes have these roles :
+    /sbin/init
+        Report status-ok and then close my pipes. Fork off and execute the /sbin/daemon process. Wait around until :
+            a) /sbin/daemon dies, in which case die myself so the vserver shuts down
+            b) I get signal SIGINT (stop-server.sh), in which case signal /sbin/daemon to shut down and then go away
+               myself
+
+    /sbin/daemon
+        Open up the fifos/sockets used to communicate with the daemons in the outside world, report presence and start
+        listening for commands. Launch OpenTTD when instructed, relay stdin/out/err and status. Try not to crash. Die
+        off when signaled by /sbin/init.
+
+    /sbin/openttd
+        Lives under the control of /sbin/daemon
+
+
+How /sbin/daemon operates:
+    Actions:
+        start, stop
+            execution state + command line arguments
+
+        stdin, stdout, stderr
+            buffered so that if the management side goes down, openttd continues execution and stdout/stderr is buffered
+            and flushed out when the management side reappears.
+
+        status
+            Notify management when the process dies
+
+
+    Two FIFOs, in and out.
+    Read/write <cmd_byte><len_byte><cmd_data> segments.
+
+        0x10    - data_stdout       bytes
+        0x11    - data_stderr       bytes
+
+        0x20    - status_ok
+        0x21    - status_exit       error code
+        0x22    - status_fatality   signal
+        0x2F    - status_idle
+
+        0x60    - data_stdin        bytes
+
+        0x70    - do_start          <arg_count>[<arg_len><arg_data>]*arg_count
+        0x71    - do_kill           signal
+
+        0x80    - query_status      
+
+
+    exit status/fatality is remembered and returned in reply to query status

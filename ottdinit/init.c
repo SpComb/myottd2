@@ -10,8 +10,6 @@
 #define OTTD_PATH "/ottd/openttd"
 #define OTTD_NAME "openttd"
 #define OTTD_ARGS "-D"
-#define OTTD_CONSOLE_IN "/console-in"
-#define OTTD_CONSOLE_OUT "/console-out"
 
 /* perror + exit */
 void die (char *msg) {
@@ -66,11 +64,17 @@ int main () {
 
     if (child) {
         if (printf("[init]: fork=%d\n", child) < 0) die("printf");
+        if (printf("[init]: closing stdin/out/err\n") < 0) die("printf");
+        
+        fclose(stdin);
+        fclose(stdout);
+        fclose(stderr);
 
         /* wait for openttd */
         if ((ret = waitpid(child, NULL, 0)) < 0) die("waitpid");
-
-        if (printf("[init]: waitpid=%d\n", ret) < 0) die("printf");
+        
+        // XXX: Figure out logging (a logfile?)
+        // if (printf("[init]: waitpid=%d\n", ret) < 0) die("printf");
 
     } else {
         ottd_exec();

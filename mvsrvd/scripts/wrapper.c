@@ -22,7 +22,9 @@ int main (int argc, char **argv) {
         CMD("create") ||
         CMD("start") ||
         CMD("stop") ||
-        CMD("destroy")
+        CMD("destroy") ||
+        CMD("mount") ||
+        CMD("umount")
     )) {
         fprintf(stderr, "Invalid action '%s'\n", argv[1]);
         exit(EXIT_FAILURE);

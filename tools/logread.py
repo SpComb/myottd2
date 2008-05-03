@@ -48,12 +48,37 @@ def read_audit_entry (audit_id) :
     
     reactor.stop()
 
+@inlineCallbacks
+def list_audit_entries () :
+    res = yield db.query("""
+        SELECT
+            id, daemon, method
+        FROM
+            api_audit
+        ORDER BY
+            ts DESC
+        LIMIT 10
+        """
+    )
+    
+    res.reverse()
+
+    for id, daemon, method in res :
+        print "\t%8d: %s.%s" % (id, daemon, method)
+
+    reactor.stop()
+
 if __name__ == '__main__' :
     from sys import argv
-
-    audit_id = int(argv[1])
-
-    read_audit_entry(audit_id)
     
+    argv.pop(0)
+    
+    if argv :
+        audit_id = int(argv[0])
+
+        read_audit_entry(audit_id)
+    else :
+        list_audit_entries()
+
     reactor.run()
 

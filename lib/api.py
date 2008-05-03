@@ -67,6 +67,9 @@ class Context (object) :
     
     # set by Logger.api_audit
     # audit_id
+    
+    # set to True by dontLogResult to skip result-logging
+    _dontLogResult_flag = False
 
     def _prepare (self) :
         self.auth_info = "%s:%s" % (self.auth_method, self.auth_user)
@@ -91,6 +94,10 @@ class Context (object) :
         """
 
         return self.client
+    
+    def dontLogResult (self) :
+        self._dontLogResult_flag = True
+
 
 class XMLRPCHandler (xmlrpc.XMLRPC) :
     """
@@ -191,8 +198,9 @@ Error while handling method call %s%r for %s from %s :
                 
                 # return a generic "Internal error"
                 raise errors.Internal()
-
-            yield self.api.logger.api_log(ctx, "result:ok", ret_value)
+            
+            if not ctx._dontLogResult_flag :
+                yield self.api.logger.api_log(ctx, "result:ok", ret_value)
 
             # ...what's our return format?
             returnValue( ret_value )

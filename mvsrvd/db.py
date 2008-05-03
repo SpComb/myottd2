@@ -80,3 +80,46 @@ def server_info (server_id) :
 
     returnValue( res )
 
+@inlineCallbacks
+def server_details (server_id) :
+    res = yield db.queryOne("""
+        SELECT
+            vu.username, 
+            s.name,
+            s.version,
+            sl.port
+        FROM 
+            servers s   INNER JOIN v_usernames vu 
+                ON s.owner = vu.id
+                        INNER JOIN server_locations sl
+                ON s.location = sl.id
+        WHERE 
+            s.id = %s
+        """, 
+            server_id
+    )
+
+    if not res :
+        raise errors.Common_NoSuchServer()
+
+    returnValue( res )
+
+@inlineCallbacks
+def server_context_id (server_id) :
+    res = yield db.queryOne("""
+        SELECT
+            sl.context
+        FROM 
+            servers s       INNER JOIN server_locations sl
+                ON s.location = sl.id
+        WHERE 
+            s.id = %s
+        """, 
+            server_id
+    )
+
+    if not res :
+        raise errors.Common_NoSuchServer()
+
+    returnValue( res )
+   

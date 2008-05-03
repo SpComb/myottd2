@@ -58,8 +58,8 @@ mvsrvd:
             actually inserted into the database (how does this affect server ID generation?). The log output of
             these operations and the server creation script is also returned and shown to the user.
             
-        server_status <server_id> -> { is_mounted, is_running, uptime_desc, load_avg_desc }
-            Fetch some simple state info for the given server ID.
+        server_state <server_id> -> is_running
+            Is the given server running or not?
             
         mount_server <server_id> -> ok
             Mounts the filesystem for the given server ID with the server's OpenTTD version (from the database),
