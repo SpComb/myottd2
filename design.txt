@@ -1,92 +1,17 @@
-So what daemons do we run?
+This is a full rewrite of the code running behind myottd.net.
 
-Core:
- * db (PostgreSQL)
-    Stores all the historical, non-volatile data. DB Schema is latter on somewhere down there -->
+The aim of this project is to learn from the failures of the old code, and improve upon it to provide a solid, maintainable service that people can actually use.
 
- * web
-    Handles the HTTP requests for dynamic web pages by pulling in data from the database/other daemons
+Running a service like myottd.net is difficult - the functionality that your code provides is the only functionality that the users have, and you're responsible for maintaining the entire thing, managing abuse etc.
 
- * files
-    Handles the HTTP requests for static in-vserver files, and provides file metadata to web
+The objective of the new codebase is to provide a solid and secure foundation which gives users full control of their servers, and provides a good basis upon which to build future functionality.
 
- * vservers
-    Handles the VServers, i.e. sets them up and runs/stops them
+The service structure has been reworked entirely. Each OpenTTD server is run separately inside a minimalized virtual machine (using the linux-vserver kernel virtualization software). This isolates the servers from eachother and the core system, inclduding resource restrictions for induvidual servers (cpu, mem, disk, network). Because of the security provided by this solution, I can now give users full control of their servers - this includes filesystem access (openttd.cfg, savegames, newgrfs), arbitrary commandline arguments, and raw access to the console. The only restriction is that the service is only intended for running OpenTTD servers, so you can't run arbitrary executables (although this doesn't rule out the possibility for custom OpenTTD versions compiled with user-supplied-patches).
 
- * servers
-    Handles the OpenTTD VServers (stdin, out, err, start, stop, command-line arguments)
+The core management code has been split into multiple separate modules, which run as their own daemons. This provides separation of permissions and security in depth (multiple layers of validation). The daemons communicate with eachother using an XMLRPC API. This API (and the entire codebase for that matter) is public, and many of the methods accept a MyOTTD username/password as authentication. This means that you can do things such as starting and stopping a server directly with an XMLRPC client from your own code.
 
-Extra:
- * irc
-    Handles the IRC connections. Gets events/status from the servers daemon, and sends commands there. Probably receives some instructions from web as well
+Ideally the code should be as flexible as possible. It should be possible to build functionality such as a web-based openttd.cfg editor in such a way that it could also be used separately from the entire vserver infrastructure. Users should be able to download the code and run it own their own servers in differing configurations, such as having the web server and other things in the same process, and forking off a single OpenTTD process directly, and then managing this from the web server (in some kind of single-server mode).
+
+In addition to providing the HTML-based interface to manage the servers, it might be a good idea to also offer a "native" interface of some sort. Let users access their server's console directly via an ssh console connection, and access their server's filesystem via SCP/SFTP or somesuch.
 
 
-Database schema:
-
- * users
-    id
-    username
-    password (md5, salted as "%s_%s:%s" % (password, id, username))
-    email
-    created
-    last_login
- 
- * ottd_versions (OpenTTD versions)
-    name (rel_060, rel_053, r12686, rel_060rc4)
-    description (0.6.0, r12686)
-    created (when it was released)
-    type (stable, oldstable, nightly, updated whenever these change, perhaps these should be stored elsewhere than in a column?)
- 
- * resources (server resource limitation classes)
-    name
-    hdd (in MB)
-    cpu (in ... percentage? Probably more complicated than that)
-    ram (in KB, hard limit, but perhaps swap?)
- 
- * ports (what TCP/UDP ports to use for servers)
-    port
-
- * servers
-    id
-    owner ( -> users.id)
-    name
-    title
-    port 
-    version ( -> versions.name)
-    res_class ( -> resources.name)
-
-What runs on the VServers :
-    daemond - manage a remote daemon (OpenTTD dedicated server, in this case)
-
-    Objectives:
-        start, stop, restart 
-            execution state + command line arguments
-
-        stdin, stdout, stderr
-            buffered so that if the management side goes down, the daemon continues execution and stdout/stderr is buffered
-            and flushed out when the management side reappears.
-
-        status
-            Notify management when the process dies
-
-
-    Two FIFOs, in and out.
-    Read/write <cmd_byte><len_byte><cmd_data> segments.
-
-        0x10    - data_stdout       bytes
-        0x11    - data_stderr       bytes
-
-        0x20    - status_ok
-        0x21    - status_exit       error code
-        0x22    - status_fatality   signal
-        0x2F    - status_idle
-
-        0x60    - data_stdin        bytes
-
-        0x70    - do_start          <arg_count>[<arg_len><arg_data>]*arg_count
-        0x71    - do_kill           signal
-
-        0x80    - query_status      
-
-
-    exit status/fatality is remembered and returned in reply to query status

@@ -1,2 +1,6 @@
 init
 init_debug
+lib
+minit-*
+runit-*
+daemon
