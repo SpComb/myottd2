@@ -1,3 +1,7 @@
+/*
+ * A daemon that controlls a running process, providing a management/status/input/output interface via fifos
+ */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,8 +76,9 @@ enum {
 
 // possible states
 enum {
-    STATE_HELLO,
-    STATE_RECOVER,
+    STATE_HELLO     = 0x01,
+    STATE_RECOVER   = 0x02,
+    STATE_IDLE      = 0x04,
 };
 
 static int _state;
@@ -87,8 +92,9 @@ struct cmd_handler {
 
     size_t min_len;
 
-    // a function for each state
-    cmd_func_t st_hello;
+    int valid_states;
+
+    cmd_func_t func;
 };
 
 // forward declerations of the state functions
@@ -100,12 +106,15 @@ void    st_recover_enter ();
 static struct cmd_handler _cmd_table[CMD_MAX];
 
 // set up the cmd_handler struct for the given cmd in the _cmd_table
-void _cmd_def (int cmd, size_t min_len, cmd_func_t st_hello) {
+void _cmd_def (int cmd, size_t min_len, int valid_states, cmd_func_t func) {
     assert(min_len >= 0 && min_len <= MAX_DATA_LEN);
+    
+    struct cmd_handler *ch = &_cmd_table[cmd];
 
-    _cmd_table[cmd].cmd = cmd;
-    _cmd_table[cmd].min_len = min_len;
-    _cmd_table[cmd].st_hello = st_hello;
+    ch->cmd = cmd;
+    ch->min_len = min_len;
+    ch->valid_states = valid_states;
+    ch->func = func;
 }
 
 // do the work needed to initialize the _cmd_table
@@ -114,8 +123,8 @@ void cmd_table_init () {
 
     #define CMD _cmd_def
     
-    //      cmd                     min_len     st_hello
-    CMD(    CMD_INOUT_HELLO,        1,          st_hello_cmd_hello  );
+    //      cmd                     min_len     valid_states    st_hello
+    CMD(    CMD_INOUT_HELLO,        1,          STATE_HELLO,    st_hello_cmd_hello  );
 }
 
 // some file descriptors/event structs
@@ -124,12 +133,19 @@ static int read_fifo_fd, write_fifo_fd;
 static struct event read_fifo_ev;
 static struct bufferevent *write_fifo_bev;
 
-/* perror + exit */
+/* debugging/logging/etc */
+
+/*
+ * perror + exit
+ */
 void die (char *msg) {
     perror(msg);
     exit(EXIT_FAILURE);
 }
 
+/*
+ * fancy debug
+ */
 void _debug (char const *file, int line, char const *func, char const *fmt, ...) {
     va_list vargs;
 
@@ -142,13 +158,26 @@ void _debug (char const *file, int line, char const *func, char const *fmt, ...)
 
 #define DEBUG(...) _debug(__FILE__, __LINE__, __func__, __VA_ARGS__)
 
-void protocol_error (short code) {
+/*
+ * protocol-level error
+ */
+void protocol_error (uint16_t code) {
     DEBUG("code=0x%04X", code);
+
+    if (write_fifo_fd) {
+        msg_t errmsg;
+
+        errmsg.cmd = CMD_OUT_ERROR;
+        errmsg.len = sizeof(uint16_t);
+        *((uint16_t *) errmsg.data) = htons(code);
+
+        write_fifo_send(&errmsg);
+    }
 }
 
 #define ERROR_IF(code, condition) do { if (condition) { protocol_error(code); return; } } while (0)
 
-/* event handlers */
+/* I/O ops */
 
 /*
  * Handles a message by calling the appropriate command handler
@@ -163,25 +192,15 @@ void _message_handler (msg_t *msg) {
         return protocol_error(ERROR_INVALID_CMD);
 
     if (msg->len < cmd_handler.min_len)
-        protocol_error(ERROR_SHORT_CMD_DATA);
+        return protocol_error(ERROR_SHORT_CMD_DATA);
+        
+    if (!(cmd_handler.valid_states & _state))
+        return protocol_error(ERROR_INVALID_CMD_STATE);
 
-    // fetch the cmd func
-    cmd_func_t func = NULL;
-
-    switch (_state) {
-        case STATE_HELLO:
-            func = cmd_handler.st_hello;
-
-            break;
-    };
-
-    DEBUG("func=%p", func);
+    DEBUG("func=%p", cmd_handler.func);
     
     // complain about bad state re the cmd, or call the cmd
-    if (!func)
-        protocol_error(ERROR_INVALID_CMD_STATE);
-    else
-        func(msg);
+    cmd_handler.func(msg);
 }
 
 /*
@@ -261,7 +280,7 @@ int write_fifo_send (msg_t *msg) {
 void read_fifo_open () {
     // open the read fifo
     DEBUG("open(\"%s\", O_RDONLY | O_NONBLOCK)", READ_FIFO_PATH);
-    read_fifo_fd = open(READ_FIFO_PATH, O_RDONLY | O_NONBLOCK);
+    read_fifo_fd = open(READ_FIFO_PATH, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 
     if (read_fifo_fd == -1)
         die("open(read_fifo)");
@@ -291,7 +310,7 @@ void read_fifo_reopen () {
 void write_fifo_open () {
     // open the write fifo
     DEBUG("open(\"%s\", O_WRONLY | O_NONBLOCK)", WRITE_FIFO_PATH);
-    write_fifo_fd = open(WRITE_FIFO_PATH, O_WRONLY | O_NONBLOCK);
+    write_fifo_fd = open(WRITE_FIFO_PATH, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 
     if (write_fifo_fd == -1)
         die("open(write_fifo)");
@@ -307,6 +326,7 @@ void write_fifo_open () {
         die("bufferevent_enable(write_fifo)");
 }
 
+/* state functions */
 void st_hello_enter () {
     // we wait for the manager to take inital contact with us
     _state = STATE_HELLO;
@@ -323,7 +343,18 @@ void st_recover_enter () {
     read_fifo_reopen();
 }
 
-void st_hello_cmd_hello (msg_t *msg) {
+void st_idle_enter () {
+    // we just wait for the manager to do something
+    _state = STATE_IDLE;
+}
+
+/* command functions */
+
+/*
+ * we are in hello/reocver state and have just re-opened the read fifo, the write fifo is still closed.
+ * the manager sends us a hello message to indicate that is has our write fifo open.
+ */
+void cmd_hello (msg_t *msg) {
     ERROR_IF(ERROR_CMD_HELLO_VERSION_SIZE, msg->len != 1);
 
     unsigned char version = msg->data[0];
@@ -345,6 +376,9 @@ void st_hello_cmd_hello (msg_t *msg) {
     DEBUG(" -> version=0x%02X", PROTOCOL_VERSION);
 
     write_fifo_send(&reply);
+
+    // now we change state
+    st_idle_enter();
 }
 
 int main () {

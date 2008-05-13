@@ -13,19 +13,25 @@ def main (read_fifo_path, write_fifo_path) :
 
     write_fh.write(buf.getvalue())
 
-    select.select([read_fd], [], [])
+    buf = buffer.ReadBuffer(read(read_fd, 2))
+    cmd, len_ = buf.readStruct("BB")
 
-    msg = os.read(read_fd, 3)
+    data = read(read_fd, len_)
 
-    print "got %d bytes" % len(msg)
-    
-    buf = buffer.ReadBuffer(msg)
-    cmd, len_, version = buf.readStruct("BBB")
-
-    print "0x%02X %d = 0x%02X" % (cmd, len_, version)
+    print "0x%02X %d = %s" % (cmd, len_, buffer.hex(data))
 
     os.close(read_fd)
     write_fh.close()
+
+def read (fd, bytes) :
+    select.select([fd], [], [])
+
+    msg = os.read(fd, bytes)
+
+    print "got %d/%d bytes" % (len(msg), bytes)
+
+    return msg
+    
 
 if __name__ == '__main__' :
     main("test/daemon-out", "test/daemon-in")
