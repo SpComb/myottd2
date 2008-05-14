@@ -12,8 +12,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <unistd.h>
 
 #include <event.h>
+
+#include "process.h"
 
 // paths to the fifos
 #define READ_FIFO_PATH  "./daemon-in"
@@ -45,14 +48,10 @@ typedef struct msg {
 enum {
     CMD_INOUT_HELLO         = 0x01,
     CMD_OUT_ERROR           = 0x02,
+    CMD_OUT_REPLY           = 0x03,
 
     CMD_OUT_DATA_STDOUT     = 0x10,
     CMD_OUT_DATA_STDERR     = 0x11,
-
-    CMD_OUT_STATUS_OK       = 0x20,
-    CMD_OUT_STATUS_EXIT     = 0x21,
-    CMD_OUT_STATUS_FATALITY = 0x22,
-    CMD_OUT_STATUS_IDLE     = 0x2F,
 
     CMD_IN_DATA_STDIN       = 0x60,
 
@@ -71,7 +70,24 @@ enum {
     ERROR_INVALID_CMD_STATE = 0x0003,
     ERROR_SHORT_CMD_DATA    = 0x0004,
 
-    ERROR_CMD_HELLO_VERSION_SIZE        = 0x0101
+    ERROR_CMD_ARGS_SIZE             = 0xA101,
+
+    ERROR_CMD_PROCESS_INTERNAL      = 0xA201,
+    ERROR_PROCESS_NOT_RUNNING       = 0xA202,
+    ERROR_PROCESS_ALREADY_RUNNING   = 0xA203,
+
+    ERROR_CMD_START_ARGS_COUNT      = 0x7002,
+};
+
+// reply codes
+enum {
+    REPLY_SUCCESS           = 0x0000,   
+    
+    REPLY_STATUS_IDLE       = 0x8000,
+    REPLY_STATUS_RUN        = 0x8001,
+    REPLY_STATUS_EXIT       = 0x8002,   // exit_code
+    REPLY_STATUS_KILLED     = 0x8003,   // signal
+    REPLY_STATUS_ERR        = 0x80FF,   // errno
 };
 
 // possible states
@@ -79,6 +95,7 @@ enum {
     STATE_HELLO     = 0x01,
     STATE_RECOVER   = 0x02,
     STATE_IDLE      = 0x04,
+    STATE_RUN       = 0x08,
 };
 
 static int _state;
@@ -99,8 +116,15 @@ struct cmd_handler {
 
 // forward declerations of the state functions
 void    st_hello_enter ();
-void    st_hello_cmd_hello (msg_t *msg);
 void    st_recover_enter ();
+void    st_idle_enter ();
+void    st_run_enter ();
+
+void    cmd_hello (msg_t *msg);
+void    cmd_start (msg_t *msg);
+void    cmd_kill (msg_t *msg);
+void    cmd_query_status (msg_t *msg);
+
 
 // table of command handlers, indexed by cmd
 static struct cmd_handler _cmd_table[CMD_MAX];
@@ -123,8 +147,11 @@ void cmd_table_init () {
 
     #define CMD _cmd_def
     
-    //      cmd                     min_len     valid_states    st_hello
-    CMD(    CMD_INOUT_HELLO,        1,          STATE_HELLO,    st_hello_cmd_hello  );
+    //      cmd                     min_len     valid_states            func
+    CMD(    CMD_INOUT_HELLO,        1,          STATE_HELLO,            cmd_hello           );
+    CMD(    CMD_IN_DO_START,        1,          STATE_IDLE,             cmd_start           );
+    CMD(    CMD_IN_DO_KILL,         1,          STATE_RUN,              cmd_kill            );
+    CMD(    CMD_IN_QUERY_STATUS,    0,          STATE_IDLE | STATE_RUN, cmd_query_status    );
 }
 
 // some file descriptors/event structs
@@ -172,6 +199,24 @@ void protocol_error (uint16_t code) {
         *((uint16_t *) errmsg.data) = htons(code);
 
         write_fifo_send(&errmsg);
+    }
+}
+
+void protocol_reply (uint16_t reply, uint16_t data) {
+    DEBUG("reply=0x%04X", reply);
+
+    if (write_fifo_fd) {
+        msg_t msg;
+
+        msg.cmd = CMD_OUT_REPLY;
+        msg.len = sizeof(reply) + sizeof(data);
+
+        uint16_t * msg_data = (uint16_t *) msg.data;
+
+        msg_data[0] = htons(reply);
+        msg_data[1] = htons(data);
+
+        write_fifo_send(&msg);
     }
 }
 
@@ -280,10 +325,13 @@ int write_fifo_send (msg_t *msg) {
 void read_fifo_open () {
     // open the read fifo
     DEBUG("open(\"%s\", O_RDONLY | O_NONBLOCK)", READ_FIFO_PATH);
-    read_fifo_fd = open(READ_FIFO_PATH, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    read_fifo_fd = open(READ_FIFO_PATH, O_RDONLY | O_NONBLOCK);
 
     if (read_fifo_fd == -1)
         die("open(read_fifo)");
+
+    if (fcntl(read_fifo_fd, F_SETFD, FD_CLOEXEC) == -1)
+        die("fcntl(read_fifo, F_SETFD)");
     
     // wait for the write end to be opened and a message to be sent
     DEBUG("event_set(read_fifo, EV_READ, read_fifo_handler)");
@@ -310,10 +358,13 @@ void read_fifo_reopen () {
 void write_fifo_open () {
     // open the write fifo
     DEBUG("open(\"%s\", O_WRONLY | O_NONBLOCK)", WRITE_FIFO_PATH);
-    write_fifo_fd = open(WRITE_FIFO_PATH, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    write_fifo_fd = open(WRITE_FIFO_PATH, O_WRONLY | O_NONBLOCK);
 
     if (write_fifo_fd == -1)
         die("open(write_fifo)");
+    
+    if (fcntl(write_fifo_fd, F_SETFD, FD_CLOEXEC) == -1)
+        die("fcntl(read_fifo, F_SETFD)");
     
     // set up the write bufferevent
     write_fifo_bev = bufferevent_new(write_fifo_fd, NULL, NULL, write_fifo_error, NULL);
@@ -348,6 +399,11 @@ void st_idle_enter () {
     _state = STATE_IDLE;
 }
 
+void st_run_enter () {
+    // tend to the processs
+    _state = STATE_RUN;
+}
+
 /* command functions */
 
 /*
@@ -355,7 +411,7 @@ void st_idle_enter () {
  * the manager sends us a hello message to indicate that is has our write fifo open.
  */
 void cmd_hello (msg_t *msg) {
-    ERROR_IF(ERROR_CMD_HELLO_VERSION_SIZE, msg->len != 1);
+    ERROR_IF(ERROR_CMD_ARGS_SIZE, msg->len != 1);
 
     unsigned char version = msg->data[0];
 
@@ -381,6 +437,104 @@ void cmd_hello (msg_t *msg) {
     st_idle_enter();
 }
 
+/*
+ * we are in the idle state with no process running.
+ * start up the process
+ */
+void cmd_start (msg_t *msg) {
+    ERROR_IF(ERROR_CMD_ARGS_SIZE, msg->len > MAX_DATA_LEN - 1);
+
+    char *args[MAX_ARGS];
+    
+    unsigned char *data = (unsigned char *) msg->data, *data_p = data + 1, arg_count = *data_p++;
+
+    ERROR_IF(ERROR_CMD_START_ARGS_COUNT, arg_count > MAX_ARGS);
+    
+    int arg;
+    for (arg = 0; arg < arg_count; arg++) {
+        unsigned char arg_len = *data_p;
+        
+        // store a pointer into msg->data into the args array
+        args[arg] = data_p + 1;
+
+        // add a null terminator for the preceeding string
+        *data_p = '\0';
+
+        data_p += arg_len;
+    }
+    
+    // null terminator for the final arg string
+    data[msg->len] = '\0';
+    
+    // do the process creation
+    const struct process_info *pinfo = process_create(args);
+    
+    // send back the reply
+    if (!pinfo) {
+        protocol_error(ERROR_PROCESS_ALREADY_RUNNING);
+
+    } if (pinfo->status == PROC_ERR) {
+        protocol_error(ERROR_CMD_PROCESS_INTERNAL);
+
+    } else {
+        protocol_reply(REPLY_SUCCESS, 0);
+    }
+}
+
+/*
+ * simply send the given signal to the process
+ */
+void cmd_kill (msg_t *msg) {
+    ERROR_IF(ERROR_CMD_ARGS_SIZE, msg->len != 1);
+
+    unsigned char sig = ((unsigned char *) msg->data)[0];
+
+    const struct process_info *pinfo = process_kill(sig);
+    
+    if (!pinfo) {
+        protocol_error(ERROR_PROCESS_NOT_RUNNING);
+
+    } if (pinfo->status == PROC_ERR) {
+        protocol_error(ERROR_CMD_PROCESS_INTERNAL);
+
+    } else {
+        st_run_enter();
+        protocol_reply(REPLY_SUCCESS, 0);
+    }
+}
+
+/*
+ * query for process status
+ */
+void cmd_query_status (msg_t *msg) {
+    const struct process_info *pinfo = process_status();
+    
+    switch (pinfo->status) {
+        case PROC_IDLE :
+            protocol_reply(REPLY_STATUS_IDLE, 0);
+            break;
+
+        case PROC_RUN :
+            protocol_reply(REPLY_STATUS_RUN, 0);
+            break;
+
+        case PROC_EXIT :
+            protocol_reply(REPLY_STATUS_EXIT, pinfo->exit_status);
+            break;
+
+        case PROC_KILLED :
+            protocol_reply(REPLY_STATUS_KILLED, pinfo->signal);
+            break;
+
+        case PROC_ERR :
+            protocol_reply(REPLY_STATUS_ERR, pinfo->errnum);
+            break;
+
+        default :
+            assert(0);
+    }
+}
+
 int main () {
     /*
      * The application goes through these states:
@@ -403,6 +557,7 @@ int main () {
     
     // initialize
     cmd_table_init();
+    process_init();
     event_init();
 
     // enter init phase
