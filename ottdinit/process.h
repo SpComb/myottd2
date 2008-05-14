@@ -1,5 +1,5 @@
-#define EXEC_CWD "test/"
-#define EXEC_PATH "./test"
+#define EXEC_CWD "."
+#define EXEC_PATH "./test.sh"
 #define EXEC_NAME "test"
 
 // maximum number of arguments accepted, including the terminating NULL, but NOT argv[0], i.e. the executable name

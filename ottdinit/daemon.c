@@ -446,7 +446,9 @@ void cmd_start (msg_t *msg) {
 
     char *args[MAX_ARGS];
     
-    unsigned char *data = (unsigned char *) msg->data, *data_p = data + 1, arg_count = *data_p++;
+    unsigned char *data = (unsigned char *) msg->data, *data_p = data, arg_count = *data_p++;
+
+    DEBUG("arg_count=%d", arg_count);
 
     ERROR_IF(ERROR_CMD_START_ARGS_COUNT, arg_count > MAX_ARGS);
     
@@ -462,21 +464,31 @@ void cmd_start (msg_t *msg) {
 
         data_p += arg_len;
     }
-    
+
     // null terminator for the final arg string
     data[msg->len] = '\0';
     
+    for (arg = 0; arg < arg_count; arg++) {
+        DEBUG(" arg %d: %s", arg, args[arg]);
+    }
+    
     // do the process creation
+    DEBUG("process_create...");
     const struct process_info *pinfo = process_create(args);
+
+    DEBUG(" -> %p", pinfo);
     
     // send back the reply
     if (!pinfo) {
         protocol_error(ERROR_PROCESS_ALREADY_RUNNING);
 
     } if (pinfo->status == PROC_ERR) {
+        DEBUG("    PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
         protocol_error(ERROR_CMD_PROCESS_INTERNAL);
 
     } else {
+        DEBUG("    success, enter run state");
+        st_run_enter();
         protocol_reply(REPLY_SUCCESS, 0);
     }
 }
@@ -488,17 +500,21 @@ void cmd_kill (msg_t *msg) {
     ERROR_IF(ERROR_CMD_ARGS_SIZE, msg->len != 1);
 
     unsigned char sig = ((unsigned char *) msg->data)[0];
-
+    
+    DEBUG("process_kill(%d)", sig);
     const struct process_info *pinfo = process_kill(sig);
+
+    DEBUG(" -> %p", pinfo);
     
     if (!pinfo) {
         protocol_error(ERROR_PROCESS_NOT_RUNNING);
 
-    } if (pinfo->status == PROC_ERR) {
+    } else if (pinfo->status == PROC_ERR) {
+        DEBUG("    PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
         protocol_error(ERROR_CMD_PROCESS_INTERNAL);
 
     } else {
-        st_run_enter();
+        DEBUG("    success");
         protocol_reply(REPLY_SUCCESS, 0);
     }
 }
@@ -507,26 +523,34 @@ void cmd_kill (msg_t *msg) {
  * query for process status
  */
 void cmd_query_status (msg_t *msg) {
+    DEBUG("process_status");
     const struct process_info *pinfo = process_status();
+
+    DEBUG(" -> %p", pinfo);
     
     switch (pinfo->status) {
         case PROC_IDLE :
+            DEBUG("PROC_IDLE");
             protocol_reply(REPLY_STATUS_IDLE, 0);
             break;
 
         case PROC_RUN :
+            DEBUG("PROC_RUN");
             protocol_reply(REPLY_STATUS_RUN, 0);
             break;
 
         case PROC_EXIT :
+            DEBUG("PROC_EXIT: %d", pinfo->exit_status);
             protocol_reply(REPLY_STATUS_EXIT, pinfo->exit_status);
             break;
 
         case PROC_KILLED :
+            DEBUG("PROC_KILLED: %d", pinfo->signal);
             protocol_reply(REPLY_STATUS_KILLED, pinfo->signal);
             break;
 
         case PROC_ERR :
+            DEBUG("PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
             protocol_reply(REPLY_STATUS_ERR, pinfo->errnum);
             break;
 
