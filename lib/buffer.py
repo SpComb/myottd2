@@ -4,6 +4,13 @@ except ImportError:
     from StringIO import StringIO
 import struct
 
+"""
+    A module that provides a thin API that wraps around StringIO and struct.
+
+    This lets you do things like `foo, bar = stream.readStruct("HI")`, which automatically consumes the correct
+    amount of bytes from the stream.
+"""
+
 # prefixed to all struct format strings
 STRUCT_PREFIX = '!'
 
@@ -49,6 +56,8 @@ class IReadStream (IStreamBase) :
         """
             Reads the correct amount of data, unpacks it according to the 
             given format, and then returns the first item.
+
+            In other words, this should be used to read single-item structs.
         """
 
         return self.readStruct(fmt)[0]
@@ -68,13 +77,13 @@ class IReadStream (IStreamBase) :
         else :
             return ""
 
-    def readEnum (self, enum) :
+    def readEnum (self, enum, structCode='B') :
         """
             Returns the item from the given list of enum values that corresponds
             to a single-byte value read from the stream
         """
 
-        return enum[self.readItem('B')]
+        return enum[self.readItem(structCode)]
 
 class ISeekableStream (IStreamBase) :
     """
@@ -180,13 +189,22 @@ class IWriteStream (IStreamBase) :
         self.writeStruct(len_type, len(data))
         self.write(data)
 
-    def writeEnum (self, enum, name) :
+    def writeEnum (self, enum, name, structCode='B') :
         """
             Write the single-byte value correspnding to the given name's
-            position in the given enum
+            position in the given enum.
+
+            If it is a list, look up the name using .index(), otherwise, look
+            it up as a dict lookup.
+
         """
 
-        self.writeStruct('B', enum.index(name))
+        if isinstance(enum, list) :
+            code = enum.index(name)
+        else :
+            code = enum[name]
+
+        self.writeStruct(structCode, code)
 
 class IBufferBase (ISeekableStream) :
     """
@@ -214,12 +232,13 @@ class ReadBuffer (INonBlockingReadStream, ISeekableReadStream, IBufferBase) :
        replaced in various ways, but cannot be modified.
     """
 
-    def __init__ (self, data="") :
+    def __init__ (self, data="", strictRead=False) :
         """
             Initialize the buffer with the given data
         """
 
         self._buf = StringIO(data)
+        self.strictRead = strictRead
     
     def read (self, size=None) :
         """
@@ -235,7 +254,10 @@ class ReadBuffer (INonBlockingReadStream, ISeekableReadStream, IBufferBase) :
             ret = self._buf.read()
 
         if size and len(ret) < size :
-            raise NotEnoughDataError()
+            if self.strictRead :
+                raise Exception("Requested %d bytes, got %d: %r" % (size, len(ret), ret))
+            else :
+                raise NotEnoughDataError()
 
         return ret    
     
@@ -319,6 +341,30 @@ class WriteBuffer (IWriteStream, IBufferBase) :
         """
 
         return self._buf.write(data)
+
+class ITransportBase (object) :
+    """
+        Base class for streams that wrap Twisted ITransports
+    """
+
+    def __init__ (self, transport) :
+        """
+            Interact with the given transport
+        """
+
+        self.transport = transport
+
+class WriteTransport (ITransportBase, IWriteStream) :
+    """
+        Write interface for Twisted ITransports
+    """
+
+    def write (self, data) :
+        """
+            Hand the given data over to the transport
+        """
+
+        return self.transport.write(data)
 
 def readStringStream (stream, varlen_type) :
     """

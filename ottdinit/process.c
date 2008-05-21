@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include "process.h"
 
@@ -84,6 +85,12 @@ const struct process_info *process_create (char *args[MAX_ARGS]) {
         /* this only returns on an error condition */
         // XXX: need to communicate errmsg/errno back somehow
         _process.status = PROC_ERR;
+
+        FILE *emerg_stderr = fdopen(pipefds[ STDERR_FILENO ][ PIPE_WRITE ], "w");
+        
+        if (emerg_stderr)
+            fprintf(emerg_stderr, "[internal] Startup error: %s: %s\n", _process.errmsg, strerror(_process.errnum));
+
         exit(EXIT_FAILURE);
     } else {
         // parent
