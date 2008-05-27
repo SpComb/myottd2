@@ -7,8 +7,9 @@ import traceback
     Provides an interactive console on stdin/out for Twisted
 """
 
+from curses_console import Console as CursesConsole, main as cursesMain
 
-class Console (protocol.Protocol) :
+class StdioConsole (protocol.Protocol) :
     def __init__ (self) :
         self.readBuffer = ''
     
@@ -31,21 +32,10 @@ class Console (protocol.Protocol) :
     def lineReceived (self, line) :
         pass
 
-class CommandConsole (Console) :
+class CommandHandler (object) :
     """
         A console that reads in commands and handles them
     """
-
-    PROMPT = "> "
-
-    prompt_on_connect = True
-
-    def connectionMade (self) :
-        if self.prompt_on_connect :
-            self._prompt()
-        
-    def _prompt (self) :
-        self.write(self.PROMPT)
 
     def lineReceived (self, line) :
         if ' ' in line :
@@ -63,8 +53,6 @@ class CommandConsole (Console) :
     def _cmdDoneHandler (self, output) :
         if output :
             self.writeLine(output)
-
-        self._prompt()
     
     def error (self, errmsg) :
         self.writeLine("ERROR: %s" % errmsg)
@@ -81,6 +69,6 @@ class CommandConsole (Console) :
 
         return func(data)
 
-def open (protocol_obj) :
-    return stdio.StandardIO(protocol_obj)
+def open (protocol_cls) :
+    return stdio.StandardIO(protocol_cls())
 

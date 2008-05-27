@@ -366,6 +366,29 @@ class WriteTransport (ITransportBase, IWriteStream) :
 
         return self.transport.write(data)
 
+class LineReader (object) :
+    """
+        I turn a byte stream into a line-iterator
+    """
+
+    def __init__ (self) :
+        self.buffer = ''
+
+    def feed (self, bytes) :
+        """
+            Feed me bytes and iterate over the resulting lines.
+
+            for line in line_reader_instance.feed(some_data) :
+                ...
+        """
+
+        self.buffer += bytes
+
+        while '\n' in self.buffer :
+            line, self.buffer = self.buffer.split('\n', 1)
+
+            yield line
+
 def readStringStream (stream, varlen_type) :
     """
         Does readVarLen on an IReadStream until it returns something that evaluates to false ( == zero-length string)

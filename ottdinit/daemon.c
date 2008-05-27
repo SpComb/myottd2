@@ -121,11 +121,14 @@ struct cmd_handler {
 
 // forward declerations of the state functions
 int     write_fifo_send (msg_t *msg);
+void    read_fifo_close ();
+void    write_fifo_close ();
+void    write_pipe_close ();
 
 void    st_hello_enter ();
 void    st_recover_enter ();
 void    st_idle_enter ();
-void    st_run_enter (const struct process_info *pinfo);
+void    st_run_enter ();
 
 void    cmd_hello (msg_t *msg);
 void    cmd_start (msg_t *msg);
@@ -155,12 +158,12 @@ void cmd_table_init () {
 
     #define CMD _cmd_def
     
-    //      cmd                     min_len     valid_states            func
-    CMD(    CMD_INOUT_HELLO,        1,          STATE_HELLO,            cmd_hello           );
-    CMD(    CMD_IN_DO_START,        1,          STATE_IDLE,             cmd_start           );
-    CMD(    CMD_IN_DO_KILL,         1,          STATE_RUN,              cmd_kill            );
-    CMD(    CMD_IN_QUERY_STATUS,    0,          STATE_IDLE | STATE_RUN, cmd_query_status    );
-    CMD(    CMD_IN_DATA_STDIN,      1,          STATE_RUN,              cmd_data_stdin      );
+    //      cmd                     min_len     valid_states                    func
+    CMD(    CMD_INOUT_HELLO,        1,          STATE_HELLO | STATE_RECOVER,    cmd_hello           );
+    CMD(    CMD_IN_DO_START,        1,          STATE_IDLE,                     cmd_start           );
+    CMD(    CMD_IN_DO_KILL,         1,          STATE_RUN,                      cmd_kill            );
+    CMD(    CMD_IN_QUERY_STATUS,    0,          STATE_IDLE | STATE_RUN,         cmd_query_status    );
+    CMD(    CMD_IN_DATA_STDIN,      1,          STATE_RUN,                      cmd_data_stdin      );
 }
 
 // some file descriptors/event structs
@@ -184,8 +187,11 @@ void die (char *msg) {
 /*
  * fancy debug
  */
-void _debug (char const *file, int line, char const *func, char const *fmt, ...) {
+void _debug (int level, char const *file, int line, char const *func, char const *fmt, ...) {
     va_list vargs;
+
+    if (!level)
+        return;
 
     va_start(vargs, fmt);
 
@@ -194,13 +200,46 @@ void _debug (char const *file, int line, char const *func, char const *fmt, ...)
     printf("\n");
 }
 
-#define DEBUG(...) _debug(__FILE__, __LINE__, __func__, __VA_ARGS__)
+#define DEBUG_FIFO_READ 0
+#define DEBUG_FIFO_EOF 1
+#define DEBUG_FIFO_ERROR 1
+#define DEBUG_FIFO_WRITE 0
+#define DEBUG_FIFO_OPEN 1
+#define DEBUG_FIFO_CLOSE 1
+
+#define DEBUG_PROTO_REPLY 1
+#define DEBUG_PROTO_CMD_SEND 1
+#define DEBUG_PROTO_CMD_DEBUG 0
+
+#define DEBUG_SIGCHLD_INFO 1
+#define DEBUG_SIGCHLD_DEBUG 0
+
+#define DEBUG_PROC_STATUS 1
+
+#define DEBUG_PIPE_READ 1
+#define DEBUG_PIPE_EOF 1
+#define DEBUG_PIPE_ERROR 1
+#define DEBUG_PIPE_WRITE 1
+#define DEBUG_PIPE_OPEN 1
+#define DEBUG_PIPE_CLOSE 1
+
+#define DEBUG_STATE 1
+
+#define DEBUG_CMD_HELLO 1
+#define DEBUG_CMD_START 1
+#define DEBUG_CMD_KILL 1
+#define DEBUG_CMD_STATUS 1
+#define DEBUG_CMD_STDIN 1
+
+#define DEBUG_MAIN 1
+
+#define DEBUG(level, ...) _debug(DEBUG_##level, __FILE__, __LINE__, __func__, __VA_ARGS__)
 
 /*
  * protocol-level error
  */
 void protocol_error (uint16_t code) {
-    DEBUG("code=0x%04X", code);
+    DEBUG(PROTO_REPLY, "code=0x%04X", code);
 
     if (write_fifo_fd) {
         msg_t errmsg;
@@ -214,7 +253,7 @@ void protocol_error (uint16_t code) {
 }
 
 void protocol_reply (uint16_t reply, uint16_t data) {
-    DEBUG("reply=0x%04X", reply);
+    DEBUG(PROTO_REPLY, "reply=0x%04X", reply);
 
     if (write_fifo_fd) {
         msg_t msg;
@@ -234,27 +273,27 @@ void protocol_reply (uint16_t reply, uint16_t data) {
 void _proc_status_to_reply (const struct process_info *pinfo, short *code, short *data) {
     switch (pinfo->status) {
         case PROC_IDLE :
-            DEBUG("PROC_IDLE");
+            DEBUG(PROC_STATUS, "PROC_IDLE");
             *code = REPLY_STATUS_IDLE, *data = 0;
             break;
 
         case PROC_RUN :
-            DEBUG("PROC_RUN");
+            DEBUG(PROC_STATUS, "PROC_RUN");
             *code = REPLY_STATUS_RUN, *data = 0;
             break;
 
         case PROC_EXIT :
-            DEBUG("PROC_EXIT: %d", pinfo->exit_status);
+            DEBUG(PROC_STATUS, "PROC_EXIT: %d", pinfo->exit_status);
             *code = REPLY_STATUS_EXIT, *data = pinfo->exit_status;
             break;
 
         case PROC_KILLED :
-            DEBUG("PROC_KILLED: %d", pinfo->signal);
+            DEBUG(PROC_STATUS, "PROC_KILLED: %d", pinfo->signal);
             *code = REPLY_STATUS_KILLED, *data = pinfo->signal;
             break;
 
         case PROC_ERR :
-            DEBUG("PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
+            DEBUG(PROC_STATUS, "PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
             *code = REPLY_STATUS_ERR, *data = pinfo->errnum;
             break;
 
@@ -274,7 +313,7 @@ void _proc_status_to_reply (const struct process_info *pinfo, short *code, short
 void _message_handler (msg_t *msg) {
     struct cmd_handler cmd_handler = _cmd_table[msg->cmd];
 
-    DEBUG("cmd=%d, len=%d, _state=%d", msg->cmd, msg->len, _state);
+    DEBUG(PROTO_CMD_DEBUG, "cmd=%d, len=%d, _state=%d", msg->cmd, msg->len, _state);
     
     // valid cmd?
     if (!cmd_handler.cmd)
@@ -286,10 +325,35 @@ void _message_handler (msg_t *msg) {
     if (!(cmd_handler.valid_states & _state))
         return protocol_error(ERROR_INVALID_CMD_STATE);
 
-    DEBUG("func=%p", cmd_handler.func);
+    DEBUG(PROTO_CMD_DEBUG, "func=%p", cmd_handler.func);
     
     // complain about bad state re the cmd, or call the cmd
     cmd_handler.func(msg);
+}
+
+/*
+ * We lost the FIFO connection
+ */
+void handle_read_fifo_eof () {
+    DEBUG(FIFO_EOF, "EOF");
+
+    // close the write fifo so it's not dangling
+    write_fifo_close();
+
+    // and close the read fifo as it's useless now
+    read_fifo_close();
+    
+    // what state we enter next depends on where we are now
+    if (_state == STATE_IDLE || _state == STATE_HELLO) {
+        // no process running
+        st_hello_enter();
+    } else if (_state == STATE_RUN) {
+        // eek, a process running... we need to recover
+        st_recover_enter();
+    } else {
+        // WTF?
+        assert(0);
+    }
 }
 
 /*
@@ -301,28 +365,28 @@ void read_fifo_handler (int fd, short event, void *arg) {
 
     ssize_t bytes_read;
 
-    DEBUG("fd=%d, event=%d, arg=%p", fd, event, arg);
+    DEBUG(FIFO_READ, "fd=%d, event=%d, arg=%p", fd, event, arg);
     
     while (read_remaining) {
         bytes_read = read(fd, ( (void *) &msg ) + read_offset, read_remaining);
 
-        DEBUG("offset=%d, remaining=%d, read=%d", read_offset, read_remaining, bytes_read);
+        DEBUG(FIFO_READ, "offset=%d, remaining=%d, read=%d", read_offset, read_remaining, bytes_read);
         
         if (bytes_read == -1) {
             if (errno == EAGAIN) {
-                DEBUG("no more data");
+                DEBUG(FIFO_READ, "no more data");
                 break;
             } else
                 die("read(read_fifo");
         } else if (bytes_read == 0) {
             /* manager disconnected ! */
-            DEBUG("EOF");
+            DEBUG(FIFO_READ, "EOF");
 
             // discard any partially read messages
             read_offset = 0;
             read_remaining = HEADER_SIZE;
             
-            st_recover_enter();
+            handle_read_fifo_eof();
 
             break;
         } else {
@@ -351,16 +415,21 @@ void read_fifo_handler (int fd, short event, void *arg) {
 
 /* SIGCHLD handler */
 void sigchld_handler (int fd, short event, void *arg) {
-    DEBUG("SIGCHLD recieved");
+    DEBUG(SIGCHLD_DEBUG, "SIGCHLD recieved");
 
     // call process_status to update the process status
     const struct process_info *pinfo = process_status();
-    DEBUG("process_status -> %p", pinfo);
+    DEBUG(SIGCHLD_DEBUG, "process_status -> %p", pinfo);
+
+    // close stdin
+    write_pipe_close();
     
     // translate this into the protocol-level info
     short code, data;
 
     _proc_status_to_reply(pinfo, &code, &data);
+
+    DEBUG(SIGCHLD_INFO, "SIGCHLD, proc_status = 0x%04X %d", code, data);
     
     // send it as a CMD_OUT_STATUS message
     msg_t msg;
@@ -375,22 +444,29 @@ void sigchld_handler (int fd, short event, void *arg) {
 
     write_fifo_send(&msg);
     
-    // and enter the idle state (the process isn't running anymore)
-    st_idle_enter();
+    // and enter the correct state (the process isn't running anymore)
+    
+    if (_state == STATE_RUN) {
+        st_idle_enter();
+    } else if (_state == STATE_RECOVER) {
+        st_hello_enter();
+    } else {
+        assert(0);
+    }
 }
 
 void write_fifo_error (struct bufferevent *bev, short what, void *arg) {
     /* !?!? */
 
-    DEBUG("what=0x%04X", what);
+    DEBUG(FIFO_ERROR, "what=0x%04X", what);
 }
 
 int write_fifo_send (msg_t *msg) {
     assert(write_fifo_bev);
 
-    DEBUG("cmd=0x%02X, len=%d", msg->cmd, msg->len);
+    DEBUG(PROTO_CMD_SEND, "cmd=0x%02X, len=%d", msg->cmd, msg->len);
 
-    DEBUG("bufferevent_write(write_fifo, %d)", HEADER_SIZE + msg->len);
+    DEBUG(FIFO_WRITE, "bufferevent_write(write_fifo, %d)", HEADER_SIZE + msg->len);
     if (bufferevent_write(write_fifo_bev, msg, HEADER_SIZE + msg->len))
         die("bufferevent_write(write_fifo)");
 }
@@ -402,43 +478,48 @@ void read_pipe_handler (int fd, short event, void *arg) {
 
     msg.cmd = *msg_cmd;
     
-    DEBUG("fd=%d, event=%d, arg=%p, cmd=0x%02X", fd, event, arg, msg.cmd);
+    DEBUG(PIPE_READ, "fd=%d, event=%d, arg=%p, cmd=0x%02X", fd, event, arg, msg.cmd);
 
     msg.len = read(fd, msg.data, MAX_DATA_LEN);
 
-    DEBUG(" -> %d", msg.len);
+    DEBUG(PIPE_READ, "read %d bytes", msg.len);
 
     write_fifo_send(&msg);
 
-    if (msg.len)
+    if (msg.len) {
         switch(*msg_cmd) {
             case CMD_OUT_DATA_STDOUT :
-                DEBUG("event_add(stdout_pipe)");
                 event_add(&stdout_pipe_ev, NULL);
                 break;
 
             case CMD_OUT_DATA_STDERR :
-                DEBUG("event_add(stderr_pipe)");
                 event_add(&stderr_pipe_ev, NULL);
                 break;
 
             default :
                 assert(0);
         }
+    } else {
+        DEBUG(PIPE_EOF, "EOF on fd %d, cmd 0x%04X", fd, *msg_cmd);
+
+        DEBUG(PIPE_EOF, "close(%d)", fd);
+        if (close(fd))
+            die("close(pipe_?)");
+    }
 }
 
 void write_pipe_error (struct bufferevent *bev, short what, void *arg) {
     /* !?!? */
 
-    DEBUG("what=0x%04X", what);
+    DEBUG(PIPE_ERROR, "what=0x%04X", what);
 }
 
 int write_pipe_send (char *data, size_t len) {
     assert(write_pipe_bev);
 
-    DEBUG("data=%p, len=%d", data, len);
+    DEBUG(PIPE_WRITE, "data=%p, len=%d", data, len);
 
-    DEBUG("bufferevent_write(write_pipe, %d)", len);
+    DEBUG(PIPE_WRITE, "bufferevent_write(write_pipe, %d)", len);
     if (bufferevent_write(write_pipe_bev, data, len))
         die("bufferevent_write(write_pipe)");
 }
@@ -447,7 +528,7 @@ int write_pipe_send (char *data, size_t len) {
 /* open/close functions */
 void read_fifo_open () {
     // open the read fifo
-    DEBUG("open(\"%s\", O_RDONLY | O_NONBLOCK)", READ_FIFO_PATH);
+    DEBUG(FIFO_OPEN, "open(\"%s\", O_RDONLY | O_NONBLOCK)", READ_FIFO_PATH);
     read_fifo_fd = open(READ_FIFO_PATH, O_RDONLY | O_NONBLOCK);
 
     if (read_fifo_fd == -1)
@@ -457,30 +538,28 @@ void read_fifo_open () {
         die("fcntl(read_fifo, F_SETFD)");
     
     // wait for the write end to be opened and a message to be sent
-    DEBUG("event_set(read_fifo, EV_READ, read_fifo_handler)");
+    DEBUG(FIFO_OPEN, "event_set(read_fifo, EV_READ, read_fifo_handler)");
     event_set(&read_fifo_ev, read_fifo_fd, EV_READ, read_fifo_handler, NULL);
-    DEBUG("event_add(read_fifo)");
+    DEBUG(FIFO_OPEN, "event_add(read_fifo)");
 
     if (event_add(&read_fifo_ev, NULL))
         die("event_add(read_fifo_ev)");
 }
 
-void read_fifo_reopen () {
+void read_fifo_close () {
     if (read_fifo_fd) {
-        DEBUG("close(read_fifo)");
+        DEBUG(FIFO_CLOSE, "close(read_fifo)");
 
         if (close(read_fifo_fd))
             die("close(read_fifo)");
 
         read_fifo_fd = 0;
     }
-
-    read_fifo_open();
 }
 
 void write_fifo_open () {
     // open the write fifo
-    DEBUG("open(\"%s\", O_WRONLY | O_NONBLOCK)", WRITE_FIFO_PATH);
+    DEBUG(FIFO_OPEN, "open(\"%s\", O_WRONLY | O_NONBLOCK)", WRITE_FIFO_PATH);
     write_fifo_fd = open(WRITE_FIFO_PATH, O_WRONLY | O_NONBLOCK);
 
     if (write_fifo_fd == -1)
@@ -490,51 +569,95 @@ void write_fifo_open () {
         die("fcntl(read_fifo, F_SETFD)");
     
     // set up the write bufferevent
+    DEBUG(FIFO_OPEN, "bufferevent_new(write_fifo)");
     write_fifo_bev = bufferevent_new(write_fifo_fd, NULL, NULL, write_fifo_error, NULL);
 
     if (write_fifo_bev == NULL)
         die("bufferevent_new(write_fifo)");
     
     // and we can enable it already
+    DEBUG(FIFO_OPEN, "bufferevent_enable(write_fifo, EV_WRITE)");
     if (bufferevent_enable(write_fifo_bev, EV_WRITE))
         die("bufferevent_enable(write_fifo)");
 }
 
+void write_fifo_close () {
+    if (write_fifo_bev) {
+        DEBUG(FIFO_CLOSE, "bufferevent_disable(write_fifo)");
+        if (bufferevent_disable(write_fifo_bev, EV_WRITE))
+            die("bufferevent_disable(write_fifo)");
+        
+        DEBUG(FIFO_CLOSE, "bufferevent_free(write_fifo)");
+        bufferevent_free(write_fifo_bev);
+
+        write_fifo_bev = NULL;
+    }
+
+    if (write_fifo_fd) {
+        DEBUG(FIFO_CLOSE, "close(write_fifo");
+        if (close(write_fifo_fd))
+            die("close(write_fifo)");
+
+        write_fifo_fd = 0;
+    }
+}
+
 /* set up the SIGCHLD handler to watch over our child process */
 void sigchld_handler_init () {
-    DEBUG("event_set(sigchld, SIGCHLD, sigchld_handler)");
+    DEBUG(SIGCHLD_DEBUG, "event_set(sigchld, SIGCHLD, sigchld_handler)");
     event_set(&sigchld_ev, SIGCHLD, EV_SIGNAL|EV_PERSIST, sigchld_handler, NULL);
 
-    DEBUG("event_add(sigchld)");
+    DEBUG(SIGCHLD_DEBUG, "event_add(sigchld)");
     event_add(&sigchld_ev, NULL);
 }
 
 /* set up the read/write handlers for a child process */
 void process_pipes_init (const struct process_info *pinfo) {
-    DEBUG("stdin=%d, stdout=%d, stderr=%d", pinfo->stdin_fd, pinfo->stdout_fd, pinfo->stderr_fd);
+    DEBUG(PIPE_OPEN, "stdin=%d, stdout=%d, stderr=%d", pinfo->stdin_fd, pinfo->stdout_fd, pinfo->stderr_fd);
     
     // the read events
-    DEBUG("event_set(stdout_pipe, EV_READ, read_pipe_handler, CMD_OUT_DATA_STDOUT");
+    DEBUG(PIPE_OPEN, "event_set(stdout_pipe, EV_READ, read_pipe_handler, CMD_OUT_DATA_STDOUT");
     event_set(&stdout_pipe_ev, pinfo->stdout_fd, EV_READ, read_pipe_handler, &_stdout_data_cmd);
 
-    DEBUG("event_set(stderr_pipe, EV_READ, read_pipe_handler, CMD_OUT_DATA_STDERR");
+    DEBUG(PIPE_OPEN, "event_set(stderr_pipe, EV_READ, read_pipe_handler, CMD_OUT_DATA_STDERR");
     event_set(&stderr_pipe_ev, pinfo->stderr_fd, EV_READ, read_pipe_handler, &_stderr_data_cmd);
 
-    DEBUG("event_add(stdout_pipe)");
+    DEBUG(PIPE_OPEN, "event_add(stdout_pipe)");
     event_add(&stdout_pipe_ev, NULL);
 
-    DEBUG("event_add(stderr_pipe)");
+    DEBUG(PIPE_OPEN, "event_add(stderr_pipe)");
     event_add(&stderr_pipe_ev, NULL);
     
     // set up the write bufferevent
+    DEBUG(PIPE_OPEN, "bufferevent_new(stdin_pipe)");
     write_pipe_bev = bufferevent_new(pinfo->stdin_fd, NULL, NULL, write_pipe_error, NULL);
 
     if (write_pipe_bev == NULL)
         die("bufferevent_new(write_pipe)");
     
     // and we can enable it already
+    DEBUG(PIPE_OPEN, "bufferevent_enable(stdin_pipe, EV_WRITE)");
     if (bufferevent_enable(write_pipe_bev, EV_WRITE))
         die("bufferevent_enable(write_pipe)");
+}
+
+void write_pipe_close () {
+    if (write_pipe_bev) {
+        int fd = EVENT_FD(&write_pipe_bev->ev_write);
+
+        DEBUG(PIPE_CLOSE, "bufferevent_disable(write_pipe)");
+        if (bufferevent_disable(write_pipe_bev, EV_WRITE))
+            die("bufferevent_disable(write_pipe)");
+        
+        DEBUG(PIPE_CLOSE, "bufferevent_free(write_pipe)");
+        bufferevent_free(write_pipe_bev);
+
+        write_pipe_bev = NULL;
+
+        DEBUG(PIPE_CLOSE, "close(write_pipe -> %d)", fd);
+        if (close(fd))
+            die("close(write_pipe)");
+    }
 }
 
 /* state functions */
@@ -542,7 +665,7 @@ void st_hello_enter () {
     // we wait for the manager to take inital contact with us
     _state = STATE_HELLO;
     
-    DEBUG("enter");
+    DEBUG(STATE, "enter");
 
     // open the fifo and wait for the manager to take contact
     read_fifo_open();
@@ -552,27 +675,24 @@ void st_recover_enter () {
     // we wait for the manager to contact us again.
     _state = STATE_RECOVER;
 
-    DEBUG("enter");
-
+    DEBUG(STATE, "enter");
+    
     // reopen the fifo and wait for the manager to take contact
-    read_fifo_reopen();
+    read_fifo_open();
 }
 
 void st_idle_enter () {
     // we just wait for the manager to do something
     _state = STATE_IDLE;
     
-    DEBUG("enter");
+    DEBUG(STATE, "enter");
 }
 
-void st_run_enter (const struct process_info *pinfo) {
+void st_run_enter () {
     // tend to the processs
     _state = STATE_RUN;
 
-    DEBUG("enter");
-
-    // events for the process's stdout/err
-    process_pipes_init(pinfo);
+    DEBUG(STATE, "enter");
 }
 
 /* command functions */
@@ -587,18 +707,25 @@ void cmd_hello (msg_t *msg) {
     unsigned char version = msg->data[0];
 
     // the manager has sent us the hello message
-    DEBUG("version=0x%02X", version);
+    DEBUG(CMD_HELLO, "version=0x%02X", version);
 
     // now we should be able to open the write as well
-    DEBUG("open write fifo to manager");
     write_fifo_open();
 
     // and send the reply
-    DEBUG(" -> version=0x%02X", PROTOCOL_VERSION);
+    DEBUG(CMD_HELLO, "reply with version=0x%02X", PROTOCOL_VERSION);
     protocol_reply(REPLY_HELLO, PROTOCOL_VERSION);
 
-    // now we change state
-    st_idle_enter();
+    // now we change state, depending on where we were
+    if (_state == STATE_HELLO) {
+        // no process running
+        st_idle_enter();
+    } else if (_state == STATE_RECOVER) {
+        // a process was running when the manager disconnected
+        st_run_enter();
+    } else {
+        assert(0);
+    }
 }
 
 /*
@@ -612,7 +739,7 @@ void cmd_start (msg_t *msg) {
     
     unsigned char *data = (unsigned char *) msg->data, *data_p = data, arg_count = *data_p++;
 
-    DEBUG("arg_count=%d", arg_count);
+    DEBUG(CMD_START, "arg_count=%d", arg_count);
 
     ERROR_IF(ERROR_CMD_START_ARGS_COUNT, arg_count > MAX_ARGS);
     
@@ -636,26 +763,26 @@ void cmd_start (msg_t *msg) {
     args[arg_count] = NULL;
     
     for (arg = 0; arg < arg_count; arg++) {
-        DEBUG(" arg %d: %s", arg, args[arg]);
+        DEBUG(CMD_START, " arg %d: %s", arg, args[arg]);
     }
     
     // do the process creation
-    DEBUG("process_create...");
     const struct process_info *pinfo = process_create(args);
 
-    DEBUG(" -> %p", pinfo);
-    
     // send back the reply
     if (!pinfo) {
         protocol_error(ERROR_PROCESS_ALREADY_RUNNING);
 
-    } if (pinfo->status == PROC_ERR) {
-        DEBUG("    PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
+    } else if (pinfo->status == PROC_ERR) {
+        DEBUG(CMD_START, "    PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
         protocol_error(ERROR_CMD_PROCESS_INTERNAL);
 
     } else {
-        DEBUG("    success, enter run state");
-        st_run_enter(pinfo);
+        DEBUG(CMD_START, "success");
+
+        process_pipes_init(pinfo);
+        st_run_enter();
+
         protocol_reply(REPLY_SUCCESS, 0);
     }
 }
@@ -668,20 +795,18 @@ void cmd_kill (msg_t *msg) {
 
     unsigned char sig = ((unsigned char *) msg->data)[0];
     
-    DEBUG("process_kill(%d)", sig);
+    DEBUG(CMD_KILL, "process_kill(%d)", sig);
     const struct process_info *pinfo = process_kill(sig);
 
-    DEBUG(" -> %p", pinfo);
-    
     if (!pinfo) {
         protocol_error(ERROR_PROCESS_NOT_RUNNING);
 
     } else if (pinfo->status == PROC_ERR) {
-        DEBUG("    PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
+        DEBUG(CMD_KILL, "PROC_ERR: %s: %s", pinfo->errmsg, strerror(pinfo->errnum));
         protocol_error(ERROR_CMD_PROCESS_INTERNAL);
 
     } else {
-        DEBUG("    success");
+        DEBUG(CMD_KILL, "success");
         protocol_reply(REPLY_SUCCESS, 0);
     }
 }
@@ -690,14 +815,13 @@ void cmd_kill (msg_t *msg) {
  * query for process status
  */
 void cmd_query_status (msg_t *msg) {
-    DEBUG("process_status");
     const struct process_info *pinfo = process_status();
 
-    DEBUG(" -> %p", pinfo);
-    
     short code, data;
 
     _proc_status_to_reply(pinfo, &code, &data);
+    
+    DEBUG(CMD_STATUS, "process_status is 0x%02X %d", code, data);
 
     protocol_reply(code, data);
 }
@@ -706,7 +830,7 @@ void cmd_query_status (msg_t *msg) {
  * send data to the process
  */
 void cmd_data_stdin (msg_t *msg) {
-    DEBUG("write_pipe_send");
+    DEBUG(CMD_STDIN, "write len=%d", msg->len);
     write_pipe_send(msg->data, msg->len);
 
     protocol_reply(REPLY_SUCCESS, 0);
@@ -742,11 +866,11 @@ int main () {
     st_hello_enter();
     
     // run the event dispatcher until completion.
-    DEBUG("event_dispatch() ...");
+    DEBUG(MAIN, "event_dispatch() ...");
     int err = event_dispatch();
 
     // inspect the error code... WTF is it?
-    DEBUG("event_dispatch -> err=%d", err);
+    DEBUG(MAIN, "event_dispatch -> err=%d", err);
     
     return 0;
 }

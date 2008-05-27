@@ -27,6 +27,9 @@ class _BaseFD (abstract.FileDescriptor) :
         # and yes, we are connected
         self.connected = True
 
+        self.readable = readable
+        self.writeable = writeable
+
         if readable :
             self.startReading()
         

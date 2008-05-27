@@ -56,22 +56,25 @@ reply2code, code2reply = parse_struct("""
     REPLY_STATUS_ERR        = 0x80FF,   
 """)
 
-class Console (consoleModule.CommandConsole) :
+class Console (consoleModule.CommandHandler, consoleModule.CursesConsole) :
     # the control channel
     control = None
 
-    prompt_on_connect = False
-    
+    def __init__ (self, stdscr) :
+        # because otherwise we have object's __init__ here
+        consoleModule.CursesConsole.__init__(self, stdscr)
+
     def preConnect (self) :
         self.writeLine("Connecting to process daemon...")
     
     def onConnected (self) :
         self.writeLine("Connected, sending hello...")
+    
+    def helloFailed (self, failure) :
+        self.writeLine("Hello failed: %s" % failure.value)
 
     def onHello (self, version) :
         self.writeLine("Connection OK, remote protocol version 0x%02X" % version)
-
-        self._prompt()
 
     def controlConnectionLost (self, reason) :
         self.error("Control connection lost: %r" % reason)
@@ -120,6 +123,10 @@ class Console (consoleModule.CommandConsole) :
 
         returnValue( "kill: %s" % success )
 
+    def cmd_quit (self, data) :
+        self.writeLine("Closing connection...")
+        self.control.transport.loseConnection()
+
 class ProtocolError (Exception) :
     def __init__ (self, err) :
         self.err = err
@@ -138,7 +145,7 @@ class ControlProtocol (streamModule.StreamProtocol, protocol.Protocol) :
     def connectionMade (self) :
         self.writer = streamModule.WriteTransport(self.transport)
 
-        self.sendVersion().addCallback(self.gotHello)
+        self.sendVersion().addCallback(self.gotHello).addErrback(self.helloFailed)
 
     def processCommand (self, stream) :
         cmd = stream.readEnum(code2cmd)
@@ -146,8 +153,6 @@ class ControlProtocol (streamModule.StreamProtocol, protocol.Protocol) :
 
         func = getattr(self, cmd.lower())
 
-        print "processCommand: %r %r %r" % (cmd, data, func)
-        
         func(data)
     
     def sendCommand (self, command, data) :
@@ -164,8 +169,6 @@ class ControlProtocol (streamModule.StreamProtocol, protocol.Protocol) :
         code = dataStream.readEnum(code2reply, 'H')
         data = dataStream.readItem("H")
 
-        print "cmd_out_reply: %r %r" % (code, data)
-
         deferred = self.requestDeferreds.pop(0)
 
         deferred.callback((code, data))
@@ -181,21 +184,15 @@ class ControlProtocol (streamModule.StreamProtocol, protocol.Protocol) :
         status = dataStream.readEnum(code2reply, 'H')
         data = dataStream.readItem('H')
 
-        print "cmd_out_status: %r %r" % (status, data)
-
         self.gotStatus(status, data)
 
     def cmd_out_data_stdout (self, dataStream) :
         data = dataStream.getvalue()
 
-        print "cmd_out_data_stdout: %r" % data
-
         self.gotStdoutData (data)
 
     def cmd_out_data_stderr (self, dataStream) :
         data = dataStream.getvalue()
-
-        print "cmd_out_data_stderr: %r" % data
 
         self.gotStderrData (data)
     
@@ -223,8 +220,6 @@ class ControlProtocol (streamModule.StreamProtocol, protocol.Protocol) :
         """
             Just return the version number
         """
-
-        print "_sendVersion_result: %r %r" % (code, data)
 
         assert code == "REPLY_HELLO"
 
@@ -307,14 +302,6 @@ class FifoProtocol (ControlProtocol) :
     def writeConnectionLost (self) :
         self.transport.loseConnection()
 
-    def connectionLost (self, reason) :
-        pass
-
-    def dataReceived (self, data) :
-        print "Got data: %r" % data
-
-        super(FifoProtocol, self).dataReceived(data)
-
 class ConsoleControlProtocol (FifoProtocol) :
     # the cosole we are linked with
     console = None
@@ -322,12 +309,21 @@ class ConsoleControlProtocol (FifoProtocol) :
     def __init__ (self, console) :
         self.console = console
 
+        self.stdoutReader = streamModule.LineReader()
+        self.stderrReader = streamModule.LineReader()
+
         super(ConsoleControlProtocol, self).__init__()
     
     def connectionMade (self) :
         self.console.onConnected()
         
         super(ConsoleControlProtocol, self).connectionMade()
+    
+    def dataReceived (self, data) :
+        super(ConsoleControlProtocol, self).dataReceived(data)
+    
+    def helloFailed (self, error) :
+        self.console.helloFailed(error)
 
     def gotHello (self, version) :
         self.console.onHello(version)
@@ -337,29 +333,36 @@ class ConsoleControlProtocol (FifoProtocol) :
     
     def gotStdoutData (self, data) :
         if data :
-            self.console.gotData('stdout', data)
+            for line in self.stdoutReader.feed(data) :
+                self.console.gotData('stdout', line)
         else :
             self.console.gotEOF('stdout')
 
     def gotStderrData (self, data) :
         if data :
-            self.console.gotData('stderr', data)
+            for line in self.stderrReader.feed(data) :
+                self.console.gotData('stderr', line)
         else :
             self.console.gotEOF('stderr')
 
+    def readConnectionLost (self) :
+        self.console.controlConnectionLost("read")
+
+    def writeConnectionLost (self) :
+        self.console.controlConnectionLost("write")
+    
     def connectionLost (self, reason) :
         self.console.controlConnectionLost(reason)
 
-def main () :
-    console = Console()
-    consoleModule.open(console)
+def main_init (console) :
     console.preConnect()
-
+    
     control = ConsoleControlProtocol(console)
     console.control = control
 
+def main () :
+    consoleModule.cursesMain(Console, main_init)
+
 if __name__ == '__main__' :
     main()
-
-    reactor.run()
 

@@ -184,7 +184,7 @@ def xmlrpc_stop_server (ctx, server_id) :
     returnValue( True )
 
 @inlineCallbacks
-def xmlrpc_destroy_server (ctx, version_id) :
+def xmlrpc_destroy_server (ctx, server_id) :
 
-    returnValue( True )
+    returnValue( False )
 

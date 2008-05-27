@@ -168,7 +168,7 @@ class XMLRPCHandler (xmlrpc.XMLRPC) :
             # we have now authenticaticated
             ctx._prepare()
 
-            # XXX: audit logs
+            # XXX: audit logs here?
             
             # now, call the method itself
             try :

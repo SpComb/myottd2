@@ -18,7 +18,7 @@
 """
 
 # System Imports
-import curses
+import curses, sys
 import curses.wrapper, curses.textpad
 
 # Twisted imports
@@ -38,6 +38,14 @@ class CursesStdIO :
     def logPrefix (self) : 
         return 'CursesClient'
 
+class IOWrapper (object) :
+    def __init__ (self, console, label) :
+        self.console = console
+        self.label = label
+        
+    def write (self, bytes) :
+        self.console.writeLine("[%s] %s" % (self.label, bytes))
+
 class Console (CursesStdIO) :
     """
         This is meant to function as a simple interactive console.
@@ -46,14 +54,11 @@ class Console (CursesStdIO) :
 
         The rest of the display is used to display lines of output
     """
+    
+    prompt = ""
 
     def __init__ (self, stdscr) :
-        self.timer = 0
-        self.statusText = "TEST CURSES APP -"
-        self.searchText = ''
         self.stdscr = stdscr
-
-        # set screen attributes
 
         # make input calls non-blocking
         self.stdscr.nodelay(1) 
@@ -80,22 +85,28 @@ class Console (CursesStdIO) :
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
         curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
 
-        # main window
-        self.output_win = self.stdscr.subwin(self.rows - 1, self.cols, 0, 0)
+        # output window
+        self.output_win = self.stdscr.subwin(self.rows - 2, self.cols, 0, 0)
         self.output_win.setscrreg(0, self.rows - 3)
         self.output_win.idlok(1)
         self.output_win.scrollok(1)
 
+        # status window
+        self.status_win = self.stdscr.subwin(1, self.cols, self.rows - 2, 0)
+
         # input window
         self.input_win = self.stdscr.subwin(1, self.cols, self.rows - 1, 0)
         self.input_textbox = curses.textpad.Textbox(self.input_win)
+        self.input_win.attrset(0)
+        self.input_win.standend()
 
         self.drawStatus()
+        self.prepInput()
 
     def connectionLost (self, reason) :
         self.close()
 
-    def addLine (self, line) :
+    def writeLine (self, line) :
         """ add a line to the internal list of lines"""
 
         self.outputLines.append(line)
@@ -106,12 +117,24 @@ class Console (CursesStdIO) :
         self.output_win.refresh()
     
     def drawStatus (self) :
-        status = " [status]   blaa         ---- "
+        status = " [status] "
 
         assert len(status) <= self.cols
+        
+        try :
+            self.status_win.addstr(0, 0, "%-*s" % (self.cols, status), curses.A_REVERSE)
+        except curses.error :
+            pass
 
-        self.output_win.addstr(self.rows - 2, 0, "%*s" % (self.cols, status), curses.A_REVERSE)
-        self.output_win.refresh()
+        self.status_win.refresh()
+    
+    def prepInput (self) :
+        # doesn't work properly for some reason
+        curses.flash()
+
+        self.input_win.clear()
+        self.input_win.addstr(0, 0, self.prompt)
+        self.input_win.refresh()
 
     def doRead (self) :
         """ Input is ready! """
@@ -122,23 +145,18 @@ class Console (CursesStdIO) :
         # pass it to the input textbox
         if not self.input_textbox.do_command(ch) :
             # a complete line
-            line = self.input_textbox.gather()
-
+            line = self.input_textbox.gather()[len(self.prompt):]
+            
             self.input_win.clear()
 
-            self.handleLine(line)
+            self.lineReceived(line)
+
+            self.prepInput()
         
         self.input_win.refresh()
-
-
-        self.stdscr.addstr(self.rows-1, 0, self.searchText + (' ' * (self.cols-len(self.searchText)-2)))
-        self.stdscr.move(self.rows-1, len(self.searchText))
-
-        self.paintStatus(self.statusText + ' %d' % len(self.searchText))
-        self.stdscr.refresh()
     
-    def handleLine (self, line) :
-        pass
+    def lineReceived (self, line) :
+        self.writeLine("You said: %s" % line)
 
     def close (self) :
         """ clean up """
@@ -148,13 +166,24 @@ class Console (CursesStdIO) :
         curses.echo()
         curses.endwin()
 
-def main (stdscr) :
-    
-    screen = Console(stdscr)   # create Screen object
+def main (console_cls, cb) :
+    """
+        Runs the reactor inside curses.wrapper, using the given console class to do the curses console stuff
+    """
+
+    curses.wrapper(_main, console_cls, cb)
+
+def _main (stdscr, console_cls, cb) :
+    screen = console_cls(stdscr)
+
+    reactor.addReader(screen)
+
     stdscr.refresh()
+
+    cb(screen)
 
     reactor.run()
 
 if __name__ == '__main__' :
-    curses.wrapper.wrapper(main)
+    main(Console, lambda x: None)
 
